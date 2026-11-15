@@ -1,0 +1,73 @@
+{
+  "date": "2026-11-15",
+  "scope": "local_and_controlled_services",
+  "environment": {
+    "python": "3.12.14",
+    "node": "24.19.0",
+    "ffmpeg": "9.0.1"
+  },
+  "python": {
+    "passed": 35,
+    "failed": 0,
+    "warnings": 3,
+    "command": "python -m pytest -q tests"
+  },
+  "node": {
+    "unit_tests_passed": 5,
+    "legacy_inline_scripts_syntax_passed": 2,
+    "legacy_sse_error_rejected_before_playback": true
+  },
+  "browser_controlled": {
+    "refresh_restores_book_and_history": true,
+    "all_original_pages_preserved": true,
+    "unrelated_followup_abstains": true,
+    "export_served_as_video": true,
+    "image_attachment_persisted": true,
+    "uploaded_voice_transcribed_and_persisted": true,
+    "refresh_restores_multimodal_history": true,
+    "mobile_letterbox_ignored": true,
+    "scaled_pixel_hit_and_highlight": true,
+    "video_current_frame_recognized": true,
+    "label_audio_restores_prior_playback": true,
+    "late_recognition_ignored_after_page_change": true,
+    "browser_stores_ids_only": true
+  },
+  "browser_unconfigured": {
+    "missing_models_are_explicit": true,
+    "original_pages_readable_with_scan_marked_needs_ocr": true,
+    "unread_scan_blocks_fake_media_completion": true,
+    "qa_is_labeled_extractive_without_model": true,
+    "capability_gates_and_source_boundary": true
+  },
+  "media": {
+    "real_ffmpeg": true,
+    "format": "H264/AAC",
+    "default_dimensions": [
+      1280,
+      720
+    ],
+    "fps": 24,
+    "twenty_fractional_pages_preserved": true,
+    "last_picture_and_audio_marker_preserved": true,
+    "separate_audio_and_visual_timeline": true
+  },
+  "boundaries": {
+    "real_model_api_called": false,
+    "real_ocr_quality_verified": false,
+    "real_video_generation_quality_verified": false,
+    "real_microphone_verified": false,
+    "real_first_audio_latency_measured": false,
+    "production_deployment_verified": false
+  },
+  "review": {
+    "independent_architecture_and_implementation_review": true,
+    "confirmed_findings_fixed": [
+      "cumulative_AAC_page_drift",
+      "unvalidated_model_citations",
+      "blank_OCR_false_success",
+      "invalid_vision_schema_false_success",
+      "source_frame_clock",
+      "optional_SFX_gating_narration"
+    ]
+  }
+}

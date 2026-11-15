@@ -18,8 +18,12 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict
 # 关闭Flask/Werkzeug的HTTP请求日志
 import logging
+import hashlib
+import math
+from pathlib import Path
+import uuid
 
-from ai_story_generate import GeminiAIStroyWriter, parse_output, Gemini3ProAgent, split_sfx_text, parse_list
+from ai_story_generate import GeminiAIStroyWriter, parse_output, Gemini3ProAgent, split_sfx_text, parse_list, parse_story_pages
 from prompt_zh import chapter_writer_system, en_chapter_writer_system
 from text import OpenAIStoryWriter as SimpleStoryWriter, parse_output as parse_output_simple
 from generate_audio import AudioGenerator
@@ -35,14 +39,38 @@ from ImageCapture import ImageCapture
 from generate_image import OpenAIImageGenerator
 from nlu import QAAssistant
 from config import *
+import config as app_config
 import local_tts
 import local_asr
 
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder=None)
 CORS(app)  # 允许跨域请求
+app.config['MAX_CONTENT_LENGTH'] = BOOK_MAX_UPLOAD_BYTES
+
+
+@app.before_request
+def require_legacy_capability():
+    required = {
+        '/api/generate-story': 'story', '/api/generate-story-stream': 'story',
+        '/api/generate-image': 'image', '/api/generate-music': 'music',
+        '/api/generate-audio': 'tts', '/api/generate-sfx': 'sfx',
+        '/api/analyze-image': 'vision', '/api/analyze-video-frame': 'vision',
+        '/api/nlu': 'answer', '/api/asr': 'asr', '/api/tts': 'tts',
+        '/api/generate-video': 'video',
+    }.get(request.path)
+    if request.path.startswith('/api/books/') and request.path.endswith('/transcribe'):
+        required = 'asr'
+    if required and not get_capabilities().get(required, False):
+        return jsonify({'success': False, 'error': f'{required} 能力未配置或本机依赖未就绪',
+                        'code': 'capability_not_configured', 'capability': required}), 503
+
+
+@app.errorhandler(413)
+def upload_too_large(error):
+    return jsonify({'success': False, 'error': '上传文件超过本机配置的大小限制'}), 413
 
 
 class _PrefixStripMiddleware:
@@ -61,9 +89,8 @@ class _PrefixStripMiddleware:
 
 app.wsgi_app = _PrefixStripMiddleware(app.wsgi_app, '/tts-story-book')
 
-# 配置静态文件服务
-app.static_folder = '.'  # 设置静态文件目录为当前目录
-app.static_url_path = ''  # 静态文件URL路径为空，允许直接通过根URL访问
+# HTML/CSS/JS and book assets are served by explicit routes only.
+# Never expose the source/configuration directory as a generic static folder.
 
 
 
@@ -79,9 +106,9 @@ analyzer = ImageObjectAnalyzer(base_url=image_analysis_url, api_key=image_api_ke
 video_generator = VolcanoVideoGenerator(base_url=image2video_url, api_key=image2video_api_key, model=image2video_model, verbose=True)
 # 全局视频生成线程池（避免每次调用都创建新的线程池）
 
-# 图生视频统一参数：480p / 5 秒，成本最低
+# 页级视频按原图生成，再由整片导出按配音时长对齐。
 VIDEO_DURATION = 5
-VIDEO_RESOLUTION = '480p'
+VIDEO_RESOLUTION = '720p'
 VIDEO_RATIO = '16:9'
 
 # 保持绘本风格、避免角色变形的统一提示词后缀
@@ -93,13 +120,21 @@ VIDEO_STYLE_SUFFIX = (
 # 正在生成中的视频路径，避免同一页被重复提交
 _video_inflight = set()
 _video_inflight_lock = threading.Lock()
+_video_status = {}
 
 
 def _abs_session_dir(session_dir):
     """session_dir 统一转绝对路径。"""
     if not session_dir:
         return session_dir
-    return session_dir if os.path.isabs(session_dir) else os.path.join(TARGET_DIR, session_dir)
+    base = Path(TARGET_DIR).resolve()
+    target = Path(session_dir) if os.path.isabs(session_dir) else base / session_dir
+    target = target.resolve()
+    try:
+        target.relative_to(base)
+    except ValueError as exc:
+        raise ValueError('会话目录不在配置的数据目录内') from exc
+    return str(target)
 
 
 def _video_output_path(session_dir, paragraph_index):
@@ -116,10 +151,19 @@ def build_page_video_prompt(page_text):
     return f"以这张绘本插图为第一帧，让画面轻微、自然地动起来。{VIDEO_STYLE_SUFFIX}"
 
 
-def _video_task_runner(prompt, image_path, session_dir, paragraph_index):
+def _video_task_runner(prompt, image_path, session_dir, paragraph_index, force=False):
     """线程池包装：任务结束后清理 in-flight 标记。"""
     try:
-        return generate_video_task(prompt, image_path, session_dir, paragraph_index)
+        path = _video_output_path(session_dir, paragraph_index)
+        _video_status[path] = {'status': 'running', 'error': None}
+        result = generate_video_task(prompt, image_path, session_dir, paragraph_index, force=force)
+        if not result:
+            raise RuntimeError('视频生成没有返回有效文件')
+        _video_status[path] = {'status': 'succeeded', 'error': None}
+        return result
+    except Exception as exc:
+        _video_status[_video_output_path(session_dir, paragraph_index)] = {'status': 'failed', 'error': str(exc)}
+        raise
     finally:
         with _video_inflight_lock:
             _video_inflight.discard(_video_output_path(session_dir, paragraph_index))
@@ -132,7 +176,7 @@ def enqueue_video_task(prompt, image_path, session_dir, paragraph_index, force=F
     Returns: 'cached' / 'running' / 'queued'
     """
     video_path = _video_output_path(session_dir, paragraph_index)
-    if not force and os.path.exists(video_path) and os.path.getsize(video_path) > 1024:
+    if not force and _legacy_video_cached(prompt, image_path, video_path):
         print(f"   ⏭️ 第 {paragraph_index + 1} 页视频已存在，跳过生成（缓存）")
         return 'cached'
 
@@ -143,7 +187,8 @@ def enqueue_video_task(prompt, image_path, session_dir, paragraph_index, force=F
         _video_inflight.add(video_path)
 
     try:
-        video_executor.submit(_video_task_runner, prompt, image_path, session_dir, paragraph_index)
+        _video_status[video_path] = {'status': 'queued', 'error': None}
+        video_executor.submit(_video_task_runner, prompt, image_path, session_dir, paragraph_index, force)
         return 'queued'
     except Exception:
         with _video_inflight_lock:
@@ -381,15 +426,13 @@ def serve_voice_register_html():
 @app.route('/favicon.ico')
 def favicon():
     """处理favicon请求（不带前缀）"""
-    # 返回404响应，避免502错误
-    return jsonify({'error': 'favicon not found'}), 404
+    return '', 204
 
 
 @app.route('/tts-story-book/favicon.ico')
 def favicon_with_prefix():
     """处理带部署前缀的favicon请求"""
-    # 返回404响应，避免502错误
-    return jsonify({'error': 'favicon not found'}), 404
+    return '', 204
 
 
 @app.route('/api/enroll', methods=['POST'])
@@ -606,20 +649,10 @@ def generate_story_stream():
                         success_check_fn=parse_list
                     )
                     
-                    # 重试直到成功
-                    retry_count = 0
-                    while success is False and retry_count < 5:
-                        chapter_detail, success = chapter_writer.call(
-                            json.dumps({
-                                "completed_story": all_pages,
-                                "current_chapter": chapter
-                            }, ensure_ascii=False),
-                            success_check_fn=parse_list
-                        )
-                        retry_count += 1
-                    
+                    if not success:
+                        raise RuntimeError(f'第 {idx + 1} 章生成失败，重试预算已用尽')
                     if success:
-                        pages = [page.strip() for page in eval(chapter_detail)]
+                        pages = parse_story_pages(chapter_detail)
                         page_content = "".join(pages)
                         all_pages.append(page_content)
                         
@@ -846,6 +879,7 @@ def generate_image_api():
                 print(f"   ⚠️ 跳过视频生成（session_dir: {session_dir}, 图片存在: {os.path.exists(image_path) if image_path else False}）\n")
         else:
             print(f"   ⚠️ 第 {index + 1} 段图片生成未返回路径\n")
+            return jsonify({'success': False, 'error': '图片生成没有返回可用文件'}), 502
         
         # 将绝对路径转换为相对于 TARGET_DIR 的相对路径
         relative_image_path = image_path.replace(f'{TARGET_DIR}/', '') if image_path and image_path.startswith(f'{TARGET_DIR}/') else image_path
@@ -992,23 +1026,20 @@ def generate_audio_api():
             if not audio_path:
                 raise Exception("自定义音色生成失败")
         else:
-            # 调用TTS接口，直接写入目标路径
-            audio_path, tts_response = infer_text(
-                tts_api_url,
-                speak_text,
-                voice_params,
-                trace_id,
-                save_path=target_audio_path
-            )
+            # The normal voice adapter is the same one used by /api/tts.
+            # Optional sound effects and clone endpoints never gate narration.
+            audio_path = local_tts.synthesize(text, voice, output_path=target_audio_path, lang=lang)
+            wav_duration(audio_path)
         
         print(f"   ✅ 语音生成成功: {audio_path}\n")
         
         # 将绝对路径转换为相对于 TARGET_DIR 的相对路径
-        relative_audio_path = audio_path.replace(f'{TARGET_DIR}/', '') if audio_path.startswith(f'{TARGET_DIR}/') else audio_path
+        relative_audio_path = Path(audio_path).resolve().relative_to(Path(TARGET_DIR).resolve()).as_posix()
         
         return jsonify({
             'success': True,
             'audio_path': relative_audio_path,
+            'audio_url': '/api/audio/' + relative_audio_path,
             'message': '语音生成成功'
         })
     
@@ -1143,7 +1174,14 @@ def get_video(filepath):
 @app.route('/health')
 def health():
     """健康检查"""
-    return jsonify({'status': 'ok'})
+    return jsonify({'status': 'ok', 'capabilities': get_capabilities(),
+                    'checks': 'configuration_and_local_dependencies', 'online_verified': False})
+
+
+@app.get('/api/capabilities')
+def capabilities_api():
+    return jsonify({'success': True, 'capabilities': get_capabilities(),
+                    'checks': 'configuration_and_local_dependencies', 'online_verified': False})
 
 
 # ========== 会话目录管理 API ==========
@@ -2296,8 +2334,27 @@ def save_exam_result():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
-def generate_video_task(prompt, image_path, session_dir, paragraph_index):
-    """后台任务：生成单页视频（480p/5 秒，带缓存跳过与整任务重试）。"""
+def _legacy_video_identity(prompt, image_path):
+    with open(image_path, 'rb') as source:
+        image_hash = hashlib.sha256(source.read()).hexdigest()
+    fields = {'image': image_hash, 'prompt': build_page_video_prompt(prompt),
+              'model': image2video_model, 'endpoint': image2video_url,
+              'resolution': VIDEO_RESOLUTION, 'duration': VIDEO_DURATION, 'version': 1}
+    return hashlib.sha256(json.dumps(fields, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def _legacy_video_cached(prompt, image_path, video_path):
+    try:
+        with open(video_path + '.json', encoding='utf-8') as source:
+            recorded = json.load(source)
+        return (os.path.isfile(video_path) and os.path.getsize(video_path) > 1024
+                and recorded.get('cache_key') == _legacy_video_identity(prompt, image_path))
+    except (OSError, ValueError):
+        return False
+
+
+def generate_video_task(prompt, image_path, session_dir, paragraph_index, force=False):
+    """Generate a page with an input-aware cache; force reaches the actual task."""
     print(f"\n🎬 [视频生成] 开始生成段落 {paragraph_index} 的视频")
     print(f"   接收到的session_dir: {session_dir}")
     print(f"   图片: {image_path}")
@@ -2308,7 +2365,7 @@ def generate_video_task(prompt, image_path, session_dir, paragraph_index):
     video_path = os.path.join(video_dir, f'video_{paragraph_index}.mp4')
 
     # 已存在则跳过，支持中断后继续
-    if os.path.exists(video_path) and os.path.getsize(video_path) > 1024:
+    if not force and _legacy_video_cached(prompt, image_path, video_path):
         print(f"   ⏭️ 视频已存在，跳过: {video_path}")
         return video_path
 
@@ -2318,15 +2375,21 @@ def generate_video_task(prompt, image_path, session_dir, paragraph_index):
     last_error = None
     for attempt in range(1, 3):
         try:
+            temporary_path = video_path + f'.{uuid.uuid4().hex}.mp4'
             result = video_generator.generate(
                 prompt=full_prompt,
                 image_path=image_path,
-                output_path=video_path,
+                output_path=temporary_path,
                 duration=VIDEO_DURATION,
                 resolution=VIDEO_RESOLUTION,
                 aspect_ratio=VIDEO_RATIO,
             )
-            if result and os.path.exists(video_path):
+            if result and os.path.isfile(temporary_path) and os.path.getsize(temporary_path) > 1024:
+                if not probe_media(temporary_path)['has_video']:
+                    raise RuntimeError('视频服务返回文件没有有效视频流')
+                os.replace(temporary_path, video_path)
+                with open(video_path + '.json', 'w', encoding='utf-8') as metadata:
+                    json.dump({'cache_key': _legacy_video_identity(prompt, image_path)}, metadata)
                 print(f"   ✅ 视频生成成功: {video_path}")
                 return video_path
             last_error = '未返回有效视频文件'
@@ -2338,12 +2401,15 @@ def generate_video_task(prompt, image_path, session_dir, paragraph_index):
             print(f"   ⚠️ 视频生成异常（第 {attempt}/2 次）: {e}")
             import traceback
             traceback.print_exc()
+        finally:
+            if 'temporary_path' in locals() and os.path.isfile(temporary_path):
+                os.remove(temporary_path)
 
         if attempt < 2:
             time.sleep(5)
 
     print(f"   ❌ 视频生成最终失败（段落 {paragraph_index + 1}）: {last_error}")
-    return None
+    raise RuntimeError(f'视频生成失败: {last_error}')
 
 
 @app.route('/api/file-exists', methods=['POST'])
@@ -2357,9 +2423,12 @@ def check_file_exists():
             return jsonify({'exists': False, 'error': '缺少file_path参数'}), 400
         
         # 将相对路径转换为绝对路径
-        absolute_path = os.path.join(TARGET_DIR, file_path)
-        exists = os.path.exists(absolute_path)
-        return jsonify({'exists': exists, 'file_path': file_path, 'absolute_path': absolute_path})
+        absolute_path = _abs_session_dir(file_path)
+        state = _video_status.get(absolute_path, {})
+        exists = os.path.isfile(absolute_path) and state.get('status') not in {'queued', 'running', 'failed'}
+        return jsonify({'exists': exists, 'file_path': file_path,
+                        'status': state.get('status', 'succeeded' if exists else 'missing'),
+                        'error': state.get('error')})
     except Exception as e:
         return jsonify({'exists': False, 'error': str(e)}), 500
 
@@ -2609,14 +2678,170 @@ def analyze_video_frame():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+# ========== Stable PDF book workflow ==========
+from book_pipeline import register_book_routes, PipelineError
+from book_video import wav_duration, probe_media
+
+
+def _book_synthesize(text, voice, output_path, language):
+    if not get_capabilities()['tts']:
+        raise RuntimeError('朗读依赖未就绪')
+    result = local_tts.synthesize(text, voice, output_path=output_path,
+                                  lang='en' if language == 'en' else 'cn')
+    wav_duration(result)
+    return result
+
+
+def _book_video_generate(image_path, prompt, output_path, options):
+    if not get_capabilities()['video']:
+        raise RuntimeError('图生视频服务未配置')
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(destination.stem + '.' + uuid.uuid4().hex + '.mp4')
+    try:
+        result = video_generator.generate(
+            prompt=build_page_video_prompt(prompt), image_path=image_path,
+            output_path=str(temporary), duration=int(options.get('duration', 5)),
+            resolution=options.get('resolution', '720p'),
+            aspect_ratio=options.get('ratio', '16:9'))
+        if not result or not temporary.is_file() or temporary.stat().st_size == 0:
+            raise RuntimeError('视频服务没有返回有效文件')
+        os.replace(temporary, destination)
+        return str(destination)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _book_answer(question, context, history):
+    if not get_capabilities()['answer']:
+        raise RuntimeError('问答模型未配置')
+    return qa_assistant.call(question, max_length=240, context=context, history=history)
+
+
+def _book_transcribe(audio_path, language):
+    if not get_capabilities()['asr']:
+        raise RuntimeError('本地识别模型尚未安装')
+    return local_asr.transcribe(audio_path, language=language)
+
+
+book_service = register_book_routes(app, {
+    'data_dir': os.path.join(OUTPUT_DIR, 'books'),
+    'max_upload_bytes': BOOK_MAX_UPLOAD_BYTES, 'max_pages': BOOK_MAX_PAGES,
+    'reader_options': {
+        'vl_base_url': image_analysis_url, 'vl_api_key': image_api_key, 'vl_model': image_model,
+        'llm_base_url': simple_story_writer_url, 'llm_api_key': simple_story_writer_api_key,
+        'llm_model': simple_story_writer_model,
+    },
+    'default_video': {'width': BOOK_VIDEO_WIDTH, 'height': BOOK_VIDEO_HEIGHT,
+                      'fps': BOOK_VIDEO_FPS, 'model': image2video_model,
+                      'resolution': '720p', 'duration': 5, 'ratio': '16:9'},
+    'cache_identity': {'tts_model': 'edge-tts-sentence-v1', 'video_model': image2video_model,
+                       'answer_model': nlu_model, 'vision_model': image_model,
+                       'prompt_version': 'paperbook-v1'},
+}, {'synthesize': _book_synthesize, 'video_generate': _book_video_generate,
+    'answer': _book_answer, 'capabilities': get_capabilities, 'transcribe': _book_transcribe})
+app.extensions['book_service'] = book_service
+
+
+@app.get('/')
+@app.get('/books')
+def book_workbench():
+    return send_from_directory(os.path.dirname(os.path.abspath(__file__)), 'book_reader.html')
+
+
+@app.get('/book_ui.js')
+def book_ui_script():
+    return send_from_directory(os.path.dirname(os.path.abspath(__file__)), 'book_ui.js')
+
+
+@app.get('/book_reader.css')
+def book_ui_styles():
+    return send_from_directory(os.path.dirname(os.path.abspath(__file__)), 'book_reader.css')
+
+
+@app.post('/api/books/<book_id>/recognize')
+def book_recognize(book_id):
+    value = request.get_json(silent=True) or {}
+    if not isinstance(value, dict):
+        raise PipelineError('请求必须是 JSON 对象')
+    page_id = value.get('page_id')
+    manifest = book_service.manifest(book_id)
+    page = next((item for item in manifest['pages'] if item['page_id'] == page_id), None)
+    if page is None:
+        raise PipelineError('页标识不存在', 404)
+    source = value.get('source', 'image')
+    if source not in {'image', 'video'}:
+        raise PipelineError('识别来源必须为 image 或 video')
+    request_id = str(value.get('request_id', ''))[:100]
+    frame_time = value.get('frame_time', 0)
+    try:
+        frame_time = float(frame_time)
+    except (TypeError, ValueError) as exc:
+        raise PipelineError('帧时间无效') from exc
+    if not math.isfinite(frame_time) or frame_time < 0:
+        raise PipelineError('帧时间无效')
+    image_ref = page['image_path']
+    image_path = book_service.asset(book_id, image_ref)
+    cached = source == 'image' and page.get('objects', {}).get('detections')
+    if cached:
+        objects = page['objects']
+    else:
+        if not get_capabilities()['vision']:
+            raise PipelineError('视觉识别模型未配置；已保留原图阅读', 503)
+        if source == 'video':
+            relative_video = page.get('media', {}).get('video', {}).get('path')
+            if not relative_video:
+                raise PipelineError('此页尚无视频，请先生成页级媒体', 409)
+            video_path = book_service.asset(book_id, relative_video)
+            frames = book_service.book_dir(book_id) / 'attachments' / 'frames'
+            frames.mkdir(parents=True, exist_ok=True)
+            image_path = frames / (uuid.uuid4().hex + '.png')
+            with ImageCapture(str(video_path)) as capture:
+                if frame_time >= capture.duration:
+                    raise PipelineError('帧时间超出当前页短片范围')
+                if not capture.capture_frame_at_time(frame_time, str(image_path)):
+                    raise PipelineError('读取当前视频帧失败', 502)
+            image_ref = image_path.relative_to(book_service.book_dir(book_id)).as_posix()
+        try:
+            objects = analyzer.call_with_metadata({'image_path': str(image_path), 'max_objects': 12,
+                       'source_id': f'{book_id}/{page_id}/{source}/{frame_time:.3f}'})
+        except Exception as exc:
+            raise PipelineError('视觉识别失败，请检查服务配置或重试', 502) from exc
+    return jsonify(success=True, book_id=book_id, page_id=page_id, request_id=request_id,
+                   source=source, frame_time=frame_time, objects=objects,
+                   image_ref=image_ref, image_url=book_service.asset_url(book_id, image_ref))
+
+
+@app.post('/api/books/<book_id>/speak')
+def book_speak(book_id):
+    book_service.manifest(book_id)
+    value = request.get_json(silent=True) or {}
+    if not isinstance(value, dict):
+        raise PipelineError('请求必须是 JSON 对象')
+    text, voice = value.get('text', ''), value.get('voice', 'xiaoyuan')
+    if not isinstance(text, str) or not text.strip() or len(text) > 2000:
+        raise PipelineError('朗读文本必须在 1 至 2000 字内')
+    if not isinstance(voice, str) or not voice or len(voice) > 100:
+        raise PipelineError('音色无效')
+    if not get_capabilities()['tts']:
+        raise PipelineError('朗读依赖未就绪', 503)
+    directory = book_service.book_dir(book_id) / 'attachments' / 'spoken'
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / (uuid.uuid4().hex + '.wav')
+    try:
+        _book_synthesize(text.strip(), voice, str(path), value.get('language', 'zh'))
+    except Exception as exc:
+        raise PipelineError('朗读生成失败，请检查网络服务或重试', 502) from exc
+    relative = path.relative_to(book_service.book_dir(book_id)).as_posix()
+    return jsonify(success=True, audio_ref=relative, audio_url=book_service.asset_url(book_id, relative),
+                   duration=wav_duration(path))
+
+
 if __name__ == '__main__':
-    print("🎙️ 故事+TTS 服务启动中...")
-    print("📍 服务地址: http://localhost:5000")
-    print("📍 故事生成: http://localhost:5000/api/generate-story")
-    print("📍 TTS接口: http://localhost:5000/api/tts")
-    print("📍 图片分析: http://localhost:5000/api/analyze-image")
-    print("📍 视频帧分析: http://localhost:5000/api/analyze-video-frame")
-    print("📍 注册接口: http://localhost:5000/api/enroll")
-    # 使用 threaded=True 支持并发请求，这样图片生成可以并行处理
-    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+    host, port = os.environ.get('HOST', '127.0.0.1'), int(os.environ.get('PORT', '5000'))
+    print(f'纸书智伴工作台: http://{host}:{port}/')
+    print(f'主题故事创作: http://{host}:{port}/tts_v2.html')
+    print('能力检查只验证本机配置与依赖；模型服务仍需实际联调。')
+    app.run(host=host, port=port, debug=False, threaded=True)
 

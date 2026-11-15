@@ -4,7 +4,7 @@
 
 业务代码只在 [`app/`](app/) 修改；[`reference/pdf-import/`](reference/pdf-import/) 是冻结参考，不直接修复、运行发布或整目录覆盖主线。移入 PDF 功能时，按入口、数据结构、路由和界面逐项集成，并保留共享版已有的前缀兼容、语音和视频适配。
 
-功能或验证结论发生变化时，同步更新 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md)、[`docs/ROADMAP.md`](docs/ROADMAP.md) 和 [`docs/VALIDATION.md`](docs/VALIDATION.md)。保留他人的进行中修改，避免同时改同一文件。
+功能或验证结论发生变化时，同步更新 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md)、[`docs/ROADMAP.md`](docs/ROADMAP.md) 、[`docs/VALIDATION.md`](docs/VALIDATION.md) 及涉及的 [`docs/BOOK_API.md`](docs/BOOK_API.md)。保留他人的进行中修改，避免同时改同一文件。
 
 ## 分支与 PR
 

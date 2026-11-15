@@ -2588,6 +2588,7 @@
     <div class="container">
         <div class="header">
             <h1>📚 绘声慧聊</h1>
+            <p><a href="/books" style="color:#3159ac;font-weight:600">打开 PDF 绘本工作台 →</a></p>
             <p class="subtitle">让每个故事都为你而生，让每次阅读都充满互动</p>
         </div>
 
@@ -5419,17 +5420,8 @@
                     
                     let [x1, y1, x2, y2] = box;
                     
-                    // 检查是否是归一化坐标（0-1000范围）
-                    const maxCoord = Math.max(x1, y1, x2, y2);
-                    if (maxCoord > 500 && maxCoord <= 1000) {
-                        // 可能是 1000 基准的归一化坐标，转换为像素坐标
-                        x1 = Math.round(x1 * originalWidth / 1000);
-                        y1 = Math.round(y1 * originalHeight / 1000);
-                        x2 = Math.round(x2 * originalWidth / 1000);
-                        y2 = Math.round(y2 * originalHeight / 1000);
-                        box = [x1, y1, x2, y2];
-                        console.log(`   📐 转换归一化坐标: ${label} → [${x1}, ${y1}, ${x2}, ${y2}]`);
-                    }
+                    // The server contract is absolute pixels in the returned frame.
+                    // Numeric ranges never identify a coordinate space.
                     
                     return { label, box: [x1, y1, x2, y2] };
                 }).filter(d => d !== null);
@@ -6712,12 +6704,14 @@
                                 throw new Error(data.message);
                             }
                         } catch (e) {
+                            if (!(e instanceof SyntaxError)) throw e;
                             console.error('解析SSE数据错误:', e, line);
                         }
                     }
                 }
             }
             
+            if (receivedChapters === 0) throw new Error('服务没有返回可阅读的内容');
             // 等待所有段落处理完成
             await Promise.all(processingPromises);
             

@@ -1,56 +1,67 @@
 # 纸书智伴
 
-这是一个协作开发快照：已有主题故事、多角色写作、逐页媒体播放和互动接口，仍需补齐指定 PDF 理解、整片合成、基于书本的检索问答及验收。当前快照尚未完成新环境启动、真实模型 API 或浏览器全流程验证。
+当前主线已接通 PDF 导入、逐页阅读、朗读与动画任务、配音整片导出，以及带原页引用的问答和会话恢复。P0/P1 的实现已进入 `app/`，并有本地测试及受控服务验证；**真实模型 API、识别/回答质量和首音时延尚未验收**。当前按“先本地与受控验证，再推送”的范围推进。
 
-## 目录与开发基线
+## 目录与入口
 
-- [`app/`](app/)：共享版主开发基线，后续业务修改集中在这里。
-- [`reference/pdf-import/`](reference/pdf-import/)：PDF 分支的冻结参考快照，保留其导入实现与已知断点；尚未与 `app/` 合并。
-- [`docs/`](docs/)：功能现状、开发顺序与验证边界。
+- [`app/`](app/)：开发主线。默认 `/` 或 `/books` 打开新的 PDF 工作台；`/tts_v2.html` 保留主题故事创作界面。
+- [`reference/pdf-import/`](reference/pdf-import/)：冻结的原 PDF 分支参考，保持原样，不用于覆盖主线。
+- [`tests/`](tests/)：本地回归与受控应用；测试样例在临时目录生成。
+- [`docs/`](docs/)：功能状态、路线、验证与 API 约定。
 
-两个目录是同一项目的不同快照，不能直接相互覆盖。共享版的接口前缀兼容、语音适配和视频任务适配应在集成中保留。
+[源码来源与原始导入清单](docs/SOURCE_PROVENANCE.md)记录历史快照，不代表当前主线的逐文件状态。
 
 ## 当前功能
 
-| 功能 | 当前状态 |
+| 功能 | 当前边界 |
 | --- | --- |
-| 主题故事与多角色写作 | 已有实现，重试及异常处理待修复 |
-| TTS、录音 ASR、通用问答 | 已有调用链，真实服务与浏览器流程未实测 |
-| 配图、音效、音乐 | 有适配代码，默认配置不完整 |
-| 单页图生视频、当前帧点读、书架 | 已有实现，坐标契约与任务失败状态待修复 |
-| 指定 PDF 导入与理解 | 仅参考快照有入口，模式传递、渲染和页号映射存在断点 |
-| 跨页配音整片、书本检索问答、可恢复聊天历史 | 缺失 |
-| 全链路流式与低延迟 | 部分事件流已有，未形成边生成边播放或达标证据 |
+| PDF 自动识字/完整看图/文字层模式 | 保留所有原页和稳定页号；缺配置、空白响应及失败明确标记 |
+| 原图、逐页朗读与动画 | 不等待整本视频完成即可阅读；模型适配器实际效果未验收 |
+| 整片、字幕与时间轴 | 本地 FFmpeg 合成 H264/AAC，默认 1280×720/24fps；音频与画面时钟明确区分 |
+| 点读、原页引用与会话 | 显式像素坐标；关键词/bigram 检索、引用校验及媒体引用持久化 |
+| 真实服务质量与低延迟 | 待验收；受控输出不能作为模型成绩 |
 
-“已有实现”表示能追踪到代码，不表示已通过真实服务验收。样例插画包含应用外生成素材，现成媒体不能证明自动生成闭环。详见[功能状态](docs/FEATURE_STATUS.md)。
+详细状态见[功能状态](docs/FEATURE_STATUS.md)，接口见[书本 API](docs/BOOK_API.md)。
 
-## 本地启动准备
+## 本地启动
 
-克隆私有仓库后，在仓库根目录执行以下 Windows PowerShell 命令。这是待验收的运行步骤；当前静态检查使用 Python 3.12.14，项目完整依赖兼容范围尚未验证。
+在仓库根目录执行以下 Windows PowerShell 命令。当前本地验证使用 Python 3.12；依赖安装和工具准备仍应在目标机器检查。
 
 ```powershell
-cd app
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+cd app
 if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+..\.venv\Scripts\python.exe story_tts_server.py
 ```
 
-在本地 `.env` 填写自己的配置。参考 [`app/config.py`](app/config.py)：故事、问答、图像理解和图生视频需要对应服务配置；文生图、音乐、音效还需补齐模板未列出的 `TEXT2IMAGE_*`、`TEXT2MUSIC_*`、`TEXT2AUDIO_*`。不要将实际凭据提交到仓库。
+打开 `http://127.0.0.1:5000/` 或 `http://127.0.0.1:5000/books`。`HOST` 默认 `127.0.0.1`，`PORT` 默认 `5000`，均可通过环境变量配置。
 
-ASR 权重没有随快照分发。准备 `Systran/faster-whisper-small` 模型至 `app/models/faster-whisper-small/`，并核对 `.env` 的 `WHISPER_MODEL`。TTS 使用 `edge-tts`，仍需要网络；未配置的生成能力不能据此视为可用。
+[配置模板](app/.env.example)不含可用凭据，服务密钥与模型配置需自行填写；留空能力会明确显示未配置。PDF 原图与文字层读取可以先用，真实 OCR/视觉、视频和模型问答需要对应配置。[能力接口](docs/BOOK_API.md)只检查配置和本机依赖，不做在线认证。
 
-完成准备后，在 `app/` 运行：
+- FFmpeg 和 ffprobe 需加入 `PATH`，或设置 `FFMPEG_PATH`、`FFPROBE_PATH`。
+- ASR 权重不随仓库分发。`WHISPER_MODEL` 指向本地模型，默认 `WHISPER_ALLOW_DOWNLOAD=false`，不会自动下载。
+- `edge-tts` 仍需网络；TTS 显示本机已准备不代表网络合成已验证。
+- 文生图、音乐、音效为可选配置；新 PDF 管线直接保留原页图，不要求先重绘。
+- 运行数据默认写入 `app/output_dir/books/`；可通过 `TARGET_DIR` 更改数据根目录。不要提交 `.env`、权重或运行产物。
+
+## 受控复现
+
+从仓库根目录运行：
 
 ```powershell
-.\.venv\Scripts\python.exe story_tts_server.py
+.\.venv\Scripts\python.exe -m pytest
+node tests/js/test_book_ui.cjs
+.\.venv\Scripts\python.exe tests/controlled_app.py --data-dir .local/controlled --port 18782
 ```
 
-浏览器打开 `http://localhost:5000/tts_v2.html`。`/health` 目前只返回固定状态，不能证明模型服务可用。`app/` 当前没有 PDF 上传入口；参考快照不能当作已合并功能使用。
+受控应用打开 `http://127.0.0.1:18782/`，生成的三页混合 PDF 位于 `.local/controlled/controlled-mixed.pdf`。它使用真实 Flask、PDF 和 FFmpeg，但 OCR、回答、配音及动画输出经过控制，**不能作为真实模型质量或真实接口时延结果**。
 
 ## 协作入口
 
-- [贡献约定](CONTRIBUTING.md)：修改范围、分支与 PR 要求。
-- [功能状态与已知断点](docs/FEATURE_STATUS.md)：源码证据及实现边界。
-- [开发路线](docs/ROADMAP.md)：可认领条目与验收条件。
-- [验证记录](docs/VALIDATION.md)：已做检查、结果与未测项目。
-- [源码来源与导入范围](docs/SOURCE_PROVENANCE.md)：两个快照、逐文件校验和与未纳入仓库的运行数据。
+- [贡献约定](CONTRIBUTING.md)
+- [功能状态与已知边界](docs/FEATURE_STATUS.md)
+- [开发路线与验收条件](docs/ROADMAP.md)
+- [验证记录与复现命令](docs/VALIDATION.md)
+- [书本 API 与时间轴](docs/BOOK_API.md)
+- [源码来源与历史导入范围](docs/SOURCE_PROVENANCE.md)

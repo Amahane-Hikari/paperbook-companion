@@ -1,4 +1,5 @@
 import json
+import ast
 from typing import Dict
 import random
 from typing import Dict, Callable
@@ -46,25 +47,54 @@ def parse_output(chapter_list):
     return response
 
 def json_parse_outline(outline):
-    outline = outline.strip("```json").strip("```")
+    outline = strip_code_fence(outline)
     try:
         outline = json.loads(outline)
         if not isinstance(outline, dict):
             return False
         if outline.keys() != {"story_title", "story_outline"}:
             return False
+        if not isinstance(outline["story_title"], str) or not isinstance(outline["story_outline"], list) or not outline["story_outline"]:
+            return False
         for chapter in outline["story_outline"]:
+            if not isinstance(chapter, dict):
+                return False
             if chapter.keys() != {"chapter_title", "chapter_summary"}:
                 return False
-    except json.decoder.JSONDecodeError:
+            if not all(isinstance(value, str) for value in chapter.values()):
+                return False
+    except (ValueError, TypeError, AttributeError):
         return False
     return True
 
+def strip_code_fence(output):
+    text = str(output).strip()
+    if text.startswith('```'):
+        lines = text.splitlines()
+        if len(lines) >= 3 and lines[-1].strip() == '```':
+            return '\n'.join(lines[1:-1]).strip()
+    return text
+
+
+def parse_story_pages(output):
+    """Read JSON and legacy Python lists without executing model output."""
+    text = strip_code_fence(output)
+    if len(text) > 1_000_000:
+        raise ValueError('Story response is too large')
+    try:
+        pages = json.loads(text)
+    except json.JSONDecodeError:
+        pages = ast.literal_eval(text)
+    if not isinstance(pages, list) or not pages or not all(isinstance(p, str) and p.strip() for p in pages):
+        raise ValueError('Expected a non-empty list of story strings')
+    return [page.strip() for page in pages]
+
+
 def parse_list(output):
     try:
-        pages = eval(output)
-        return isinstance(pages, list)
-    except Exception:
+        parse_story_pages(output)
+        return True
+    except (ValueError, SyntaxError, TypeError, RecursionError):
         return False
 
 class GeminiAIStroyWriter:
@@ -107,6 +137,8 @@ class GeminiAIStroyWriter:
                 f"Story setting: {params}\nDialogue history: \n{dialogue_history}\n",
                 temperature=self.temperature
             )
+            if not success:
+                raise RuntimeError('Story question generation failed within retry budget')
             question = question.strip()
             if question == "Thank you for your help!":
                 break
@@ -115,6 +147,8 @@ class GeminiAIStroyWriter:
                 f"Story setting: {params}\nQuestion: \n{question}\nAnswer: ",
                 temperature=self.temperature
             )
+            if not success:
+                raise RuntimeError('Story expert generation failed within retry budget')
             answer = answer.strip()
             dialogue.append(f"Expert: {answer}")
 
@@ -135,8 +169,9 @@ class GeminiAIStroyWriter:
         )
 
         outline, success = writer.call(writer_prompt, success_check_fn=json_parse_outline)
-        print(outline)
-        outline = json.loads(outline.strip("```json").strip("```"))
+        if not success:
+            raise RuntimeError('Story outline generation failed within retry budget')
+        outline = json.loads(strip_code_fence(outline))
         # print(outline).strip("```json").strip("```")
         return outline
 
@@ -165,20 +200,9 @@ class GeminiAIStroyWriter:
                 success_check_fn=parse_list,
                 temperature=self.temperature
             )
-            while success is False:
-                chapter_detail, success = chapter_writer.call(
-                    json.dumps(
-                        {
-                            "completed_story": all_pages,
-                            "current_chapter": chapter
-                        },
-                        ensure_ascii=False
-                    ),
-                    seed=random.randint(0, 100000),
-                    temperature=self.temperature,
-                    success_check_fn=parse_list
-                )
-            pages = [page.strip() for page in eval(chapter_detail)]
+            if not success:
+                raise RuntimeError(f'Story chapter {idx + 1} failed within retry budget')
+            pages = parse_story_pages(chapter_detail)
             print(pages)
             all_pages.extend(["".join(pages)])
         # print(all_pages)
