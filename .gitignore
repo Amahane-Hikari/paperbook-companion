@@ -1,0 +1,51 @@
+# Local credentials
+.env
+.env.*
+!.env.example
+!.env.template
+*.pem
+*.key
+credentials*.json
+secrets*.json
+
+# Python and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Generated state, models and book assets
+output_dir/
+prompt_dir/
+models/
+bookshelf/
+bookshelf.json
+history_res/
+tornado_client_stream/
+temp/
+tmp/
+logs/
+*.log
+*.zip
+*.pdf
+*.wav
+*.mp3
+*.mp4
+*.webm
+*.ogg
+*.flac
+*.png
+*.jpg
+*.jpeg
+*.webp
+
+# Machine-specific editor / OS state
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini

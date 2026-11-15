@@ -1,0 +1,218 @@
+{
+  "snapshot_date": "2026-11-15",
+  "business_code_modified": false,
+  "packages": [
+    {
+      "variant": "shared",
+      "archive_name": "纸书智伴-共享版.zip",
+      "archive_sha256": "782d71e58f8a17dc239a4fc75d14c7b2f7c940b3f12957d3902e3d9d39a3f157",
+      "target_directory": "app",
+      "source_files": [
+        {
+          "path": "app/.env.example",
+          "sha256": "2f07fc17be9909d0f0916879d9e59a999409ca690ca90a6dfe4a02be1352497b"
+        },
+        {
+          "path": "app/.gitignore",
+          "sha256": "c19b642743bd528e02c4cdd74ea58b63a7540731b39351420fa40e7a62bb574a"
+        },
+        {
+          "path": "app/ai_story_generate.py",
+          "sha256": "1a786c4e912037195aee520916764e9fe7b0d40d3c6ab11086bef9241c87e6c8"
+        },
+        {
+          "path": "app/baike_kw_generate.py",
+          "sha256": "f14310495e8cf17724452c3e70063c544f10298d4eb04dc097f36e0d2d8bea96"
+        },
+        {
+          "path": "app/config.py",
+          "sha256": "7a02d0ba21d36eec1884eacc71e94d4f145b22564de243374c67c5a1fe897216"
+        },
+        {
+          "path": "app/exam_paper_generate.py",
+          "sha256": "d0543bb5361ee1c31f23c54b47b66a85e62be12db7edf4c98aded7e3762c98a9"
+        },
+        {
+          "path": "app/gemini_analyze.py",
+          "sha256": "1ce45105db14cf3d9831610d17adb4f653efcba78f1313cb2d194e1c510f4b61"
+        },
+        {
+          "path": "app/generate_audio.py",
+          "sha256": "047c5d63e032b168f0566ca49b3b42a92ed282d89a943498a00709ad65cd6e5d"
+        },
+        {
+          "path": "app/generate_image.py",
+          "sha256": "df1897ff34b15077d06ec595893114626327e9b4e855fe605f65cef86d7dab8b"
+        },
+        {
+          "path": "app/generate_music.py",
+          "sha256": "8cc96cd37e64120fac6fb9439c99a53a7b63d55a068464953a2f276756891ee8"
+        },
+        {
+          "path": "app/generate_video.py",
+          "sha256": "4f59b431a92a007c73871c1ebdbd86e0de1cc21772d74c2de6db79cf0cf417a1"
+        },
+        {
+          "path": "app/generator_tts.py",
+          "sha256": "7e74b1cf1e21896cd415e73ca9bc2cf742d5916fad42a29d79bdfa99502aeb7b"
+        },
+        {
+          "path": "app/ImageCapture.py",
+          "sha256": "c7993d03d0483652456834214af80358accb5cb21631867d853d275741fa1a45"
+        },
+        {
+          "path": "app/local_asr.py",
+          "sha256": "ac2120e7f2c9c6afc9fc580b70a63dbf036e1a7d9784d6f74556bfbcd8dd35db"
+        },
+        {
+          "path": "app/local_tts.py",
+          "sha256": "46f172c412d6eec54ad68865a0a5900ddde67c8099d84b13e66545defc2c9b1e"
+        },
+        {
+          "path": "app/nlu.py",
+          "sha256": "4479d737bee21950ccd5dacde57435ba39245c601c842d428d5907babb0654ae"
+        },
+        {
+          "path": "app/prompt_zh.py",
+          "sha256": "0d60772b7aef70e801a8e07af8ad75eea86cc265e8748797ac4f5022b07cece2"
+        },
+        {
+          "path": "app/README.md",
+          "sha256": "c2cb066a4e7e675f48362aee179451aaf989db36dd82124c9f473188955dd950"
+        },
+        {
+          "path": "app/requirements.txt",
+          "sha256": "86c0769b0ffd9d8a15e55944da32eb9455527f3d9a7c6ec84095f813a7d7c902"
+        },
+        {
+          "path": "app/story_tts_server.py",
+          "sha256": "33b568d8d3fba99afa6e0140ed3c99ec4fe8fc302366611855934bc12133d15f"
+        },
+        {
+          "path": "app/text.py",
+          "sha256": "9427319f54bce4b007837e56913e5bb28a8e2251c7add0385df3b780a0e9af06"
+        },
+        {
+          "path": "app/text_agent_base.py",
+          "sha256": "ce65ed89f56fb95ec71bab3b4b778e645f941c76a5988a51b944ee92e5c9ac72"
+        },
+        {
+          "path": "app/tts_v2.html",
+          "sha256": "bc2c4302a70531f042dbb2c9bceed2cbb8dcb8027119db6250975c527f3e87ea"
+        },
+        {
+          "path": "app/voice_register.html",
+          "sha256": "9d7579ca1edc9e194e2b74fd222655c043ae2fd7fed2a1b1dc3d498c25dd3052"
+        },
+        {
+          "path": "app/volcano_video.py",
+          "sha256": "edda5750fed182f09e2364e3cfe3221b8f719ba68ed23ce64275eeb89cf42a4e"
+        },
+        {
+          "path": "app/启动服务.bat",
+          "sha256": "45b54732c42a7640136f9f7265c746b82e0a070e97910c3546a1621f99f8e1b5"
+        }
+      ]
+    },
+    {
+      "variant": "pdf-import",
+      "archive_name": "tts_book.zip",
+      "archive_sha256": "8b31ca9abdaf00bd8e4ae3bad7a57ca0d8faa4fe52bc45c676d2b7184a4ef281",
+      "target_directory": "reference/pdf-import",
+      "source_files": [
+        {
+          "path": "reference/pdf-import/ai_story_generate.py",
+          "sha256": "1a786c4e912037195aee520916764e9fe7b0d40d3c6ab11086bef9241c87e6c8"
+        },
+        {
+          "path": "reference/pdf-import/baike_kw_generate.py",
+          "sha256": "f14310495e8cf17724452c3e70063c544f10298d4eb04dc097f36e0d2d8bea96"
+        },
+        {
+          "path": "reference/pdf-import/config.py",
+          "sha256": "84a1d22c02b6493ac1016cf1160af3e6c1cd541e7c9ed34ef54b5eff4995831b"
+        },
+        {
+          "path": "reference/pdf-import/exam_paper_generate.py",
+          "sha256": "d0543bb5361ee1c31f23c54b47b66a85e62be12db7edf4c98aded7e3762c98a9"
+        },
+        {
+          "path": "reference/pdf-import/gemini_analyze.py",
+          "sha256": "1ce45105db14cf3d9831610d17adb4f653efcba78f1313cb2d194e1c510f4b61"
+        },
+        {
+          "path": "reference/pdf-import/generate_audio.py",
+          "sha256": "047c5d63e032b168f0566ca49b3b42a92ed282d89a943498a00709ad65cd6e5d"
+        },
+        {
+          "path": "reference/pdf-import/generate_image.py",
+          "sha256": "df1897ff34b15077d06ec595893114626327e9b4e855fe605f65cef86d7dab8b"
+        },
+        {
+          "path": "reference/pdf-import/generate_music.py",
+          "sha256": "8cc96cd37e64120fac6fb9439c99a53a7b63d55a068464953a2f276756891ee8"
+        },
+        {
+          "path": "reference/pdf-import/generate_video.py",
+          "sha256": "4f59b431a92a007c73871c1ebdbd86e0de1cc21772d74c2de6db79cf0cf417a1"
+        },
+        {
+          "path": "reference/pdf-import/generator_tts.py",
+          "sha256": "7e74b1cf1e21896cd415e73ca9bc2cf742d5916fad42a29d79bdfa99502aeb7b"
+        },
+        {
+          "path": "reference/pdf-import/ImageCapture.py",
+          "sha256": "4a4c4e201b1466b07af556039d001e848cb17b205137945c67d1cc372c9b710b"
+        },
+        {
+          "path": "reference/pdf-import/nlu.py",
+          "sha256": "4479d737bee21950ccd5dacde57435ba39245c601c842d428d5907babb0654ae"
+        },
+        {
+          "path": "reference/pdf-import/pdf_book_reader.py",
+          "sha256": "28c3e50e7d545b82ebdd666f26f7a37009dddbe520366a97fa2947e127b6d532"
+        },
+        {
+          "path": "reference/pdf-import/prompt_zh.py",
+          "sha256": "0d60772b7aef70e801a8e07af8ad75eea86cc265e8748797ac4f5022b07cece2"
+        },
+        {
+          "path": "reference/pdf-import/README.md",
+          "sha256": "c2cb066a4e7e675f48362aee179451aaf989db36dd82124c9f473188955dd950"
+        },
+        {
+          "path": "reference/pdf-import/requirements.txt",
+          "sha256": "f14d24d79df72ef676da6ac837198bbfe509df646b82393a3164d1d3e345c726"
+        },
+        {
+          "path": "reference/pdf-import/story_tts_server.py",
+          "sha256": "4deb60823bfd690e02b13d7b4344e869624ac966518d8d6c9408b6fcba6a4575"
+        },
+        {
+          "path": "reference/pdf-import/text.py",
+          "sha256": "d770bdb4ca8086e7ea3fbcddc8aa26fef7ca504f6d1ce966daaca0304e72c4da"
+        },
+        {
+          "path": "reference/pdf-import/text_agent_base.py",
+          "sha256": "ce65ed89f56fb95ec71bab3b4b778e645f941c76a5988a51b944ee92e5c9ac72"
+        },
+        {
+          "path": "reference/pdf-import/tts_v2.html",
+          "sha256": "60e07b50161a24c28f3c0e71c77fa449c1ea817de4222f28d97596911e247c86"
+        },
+        {
+          "path": "reference/pdf-import/voice_register.html",
+          "sha256": "9d7579ca1edc9e194e2b74fd222655c043ae2fd7fed2a1b1dc3d498c25dd3052"
+        }
+      ]
+    }
+  ],
+  "omitted": [
+    "runtime bookshelf catalogs",
+    "PDF books",
+    "images, audio and video assets",
+    "generated output and caches",
+    "chat exports",
+    "local secrets and credentials"
+  ]
+}

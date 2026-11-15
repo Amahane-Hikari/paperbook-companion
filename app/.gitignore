@@ -1,0 +1,13 @@
+# 本地密钥配置
+.env
+
+# Python
+__pycache__/
+*.pyc
+
+# 运行生成产物
+output_dir/
+prompt_dir/
+
+# 本地 ASR 模型
+models/
