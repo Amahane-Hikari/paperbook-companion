@@ -1,4 +1,4 @@
-"""本地免费 ASR：基于 faster-whisper，模型首次使用时自动下载。"""
+"""Local ASR; use installed weights unless downloading was explicitly enabled."""
 import os
 import threading
 import wave
@@ -21,7 +21,14 @@ def _get_model():
             return _model
         from faster_whisper import WhisperModel
 
-        model_size = os.environ.get("WHISPER_MODEL", "small")
+        model_size = os.environ.get("WHISPER_MODEL", "models/faster-whisper-small")
+        candidate = os.path.expanduser(model_size)
+        if not os.path.isabs(candidate):
+            candidate = os.path.join(os.path.dirname(os.path.abspath(__file__)), candidate)
+        if os.path.isdir(candidate):
+            model_size = candidate
+        elif os.environ.get('WHISPER_ALLOW_DOWNLOAD', 'false').lower() != 'true':
+            raise RuntimeError('ASR model is not installed; configure WHISPER_MODEL or explicitly enable WHISPER_ALLOW_DOWNLOAD')
         device = os.environ.get("WHISPER_DEVICE", "cpu")
         compute_type = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
         _model = WhisperModel(model_size, device=device, compute_type=compute_type)

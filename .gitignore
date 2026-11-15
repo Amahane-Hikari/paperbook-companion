@@ -29,6 +29,9 @@ tornado_client_stream/
 temp/
 tmp/
 logs/
+output/
+.local/
+.playwright-cli/
 *.log
 *.zip
 *.pdf

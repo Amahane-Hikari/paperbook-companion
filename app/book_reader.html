@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>纸书智伴 · 绘本阅读</title>
+  <link rel="stylesheet" href="/book_reader.css">
+  <script src="/book_ui.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <div><a class="brand" href="/books">纸书智伴<span>绘本阅读</span></a><p>翻一页，听一段，发现故事里的小秘密。</p></div>
+    <a class="legacy-link" href="/tts_v2.html">主题故事创作 ↗</a>
+  </header>
+  <main class="workspace">
+    <section class="import-panel card" aria-labelledby="importTitle">
+      <div class="section-heading"><h1 id="importTitle">打开一本绘本</h1><p>先阅读原页，动画和朗读准备好后即可使用。</p></div>
+      <form id="importForm" class="import-form">
+        <label class="file-control">PDF 绘本<input id="pdfFile" name="file" type="file" accept=".pdf,application/pdf" required></label>
+        <label>阅读方式<select id="readMode"><option value="auto">自动识字</option><option value="full">识字并仔细看图</option><option value="fast">只读已有文字</option></select></label>
+        <label class="checkbox"><input id="verifyOcr" type="checkbox">识字后再核对</label>
+        <button id="importButton" type="submit" class="primary">导入绘本</button>
+      </form>
+      <div class="shelf-line"><label for="bookSelect">我的书架</label><select id="bookSelect"><option value="">选择一本绘本</option></select><button id="refreshBooks" type="button" class="quiet">刷新</button><button id="reanalyze" type="button" class="quiet" disabled>重新整理本书</button></div>
+      <div id="capabilities" class="capabilities" aria-label="功能准备情况"></div>
+      <p class="subtle">功能准备情况来自本机配置，连接情况仍需实际使用确认。</p>
+    </section>
+    <p id="appStatus" class="notice" role="status" aria-live="polite">正在打开书架…</p>
+    <div class="reader-layout">
+      <aside class="pages-panel card" aria-label="绘本页列表"><div class="panel-title"><h2>书页</h2><span id="pageCount">尚未选择</span></div><nav id="pageList" class="page-list" aria-label="选择书页"><p class="empty">导入或选择绘本后，所有书页会出现在这里。</p></nav></aside>
+      <section class="reading-panel card" aria-labelledby="bookTitle">
+        <div class="reader-heading"><div><p class="eyebrow">一起读绘本</p><h2 id="bookTitle">故事，正等着翻开</h2></div><span id="bookState" class="badge">请选择绘本</span></div>
+        <div class="view-controls"><div class="segmented" role="group" aria-label="画面选择"><button id="showImage" type="button" aria-pressed="true">原图</button><button id="showVideo" type="button" aria-pressed="false" disabled>动画</button></div><span id="mediaState" class="subtle">没有动画时仍可阅读原图</span></div>
+        <div id="mediaStage" class="media-stage" tabindex="0" aria-label="绘本画面，点击认识物体">
+          <div id="stageEmpty" class="stage-empty"><span aria-hidden="true">📖</span><p>选一本书，开始今天的阅读吧</p></div>
+          <img id="pageImage" alt="" hidden>
+          <video id="pageVideo" muted playsinline preload="metadata" hidden></video>
+          <div id="objectOverlay" class="object-overlay" aria-hidden="true"></div>
+        </div>
+        <div class="recognition-line"><span id="recognitionStatus">点击画面，可以认识里面的物体。</span><button id="cancelInteraction" type="button" class="quiet" hidden>取消点读</button><button id="replaySpoken" type="button" class="quiet" hidden>重新播放刚刚的朗读</button></div>
+        <div class="page-caption"><p id="pageSubtitle">页面文字会显示在这里。</p><details><summary>查看本页原文</summary><p id="pageText"></p></details></div>
+        <div class="playback-controls"><button id="prevPage" type="button" aria-label="上一页" disabled>← 上一页</button><button id="playPause" type="button" class="primary" disabled>播放</button><button id="nextPage" type="button" aria-label="下一页" disabled>下一页 →</button><span id="pageNumber">— / —</span></div>
+        <div class="seek-line"><span id="currentTime">0:00</span><input id="seek" type="range" min="0" max="1" step="0.01" value="0" aria-label="本页播放进度" disabled><span id="duration">0:00</span></div>
+        <audio id="pageAudio" controls preload="metadata" hidden aria-label="本页朗读"></audio>
+        <section class="generation-panel" aria-labelledby="generationTitle"><h3 id="generationTitle">准备朗读与动画</h3><div class="generation-options"><label>朗读声音<select id="voice"><option value="xiaoyuan">晓晓 · 温柔女声</option><option value="xiaosi">晓伊 · 轻快女声</option><option value="niudun">云健 · 明亮男声</option><option value="oula">云扬 · 沉稳男声</option><option value="en_F001">Jenny · 英语</option></select></label><label class="checkbox"><input id="forceMedia" type="checkbox">重新制作已有内容</label></div><div class="button-row"><button id="generateBook" type="button" disabled>准备整本</button><button id="generatePage" type="button" disabled>只准备这一页</button><button id="exportBook" type="button" disabled>合成完整影片</button></div><p id="generationHint" class="subtle">阅读原图无需等待整本制作完成。</p><div id="exportLinks" class="export-links"></div></section>
+        <section class="tasks-panel" aria-labelledby="tasksTitle"><h3 id="tasksTitle">准备进度</h3><div id="taskList"><p class="subtle">暂时没有进行中的任务。</p></div></section>
+      </section>
+      <aside class="chat-panel card" aria-labelledby="chatTitle"><div class="panel-title"><h2 id="chatTitle">问问故事</h2><button id="newSession" type="button" class="quiet" disabled>新对话</button></div><p class="subtle">回答会附上原页，找不到依据时会告诉你。</p><div id="chatMessages" class="chat-messages" aria-live="polite"><p class="empty">你想知道故事里的什么呢？</p></div><div id="pendingAttachments" class="pending-attachments"></div><form id="questionForm" class="question-form"><label for="questionInput">我的问题</label><textarea id="questionInput" rows="3" maxlength="4000" placeholder="例如：红苹果送给了谁？" disabled></textarea><label class="checkbox"><input id="speakAnswers" type="checkbox" checked>朗读回答</label><div class="button-row"><button id="sendQuestion" type="submit" class="primary" disabled>提问</button><button id="recordQuestion" type="button" disabled>🎙 语音提问</button></div></form><p id="recordingStatus" class="subtle">语音提问需要麦克风和识别功能。</p><div class="attachment-controls"><label class="attachment-label">上传语音提问<input id="audioUpload" type="file" accept="audio/*,.wav,.webm,.mp3,.m4a,.ogg,.flac" disabled></label><label class="attachment-label">给问题附一张图<input id="imageUpload" type="file" accept="image/png,image/jpeg,image/webp" disabled></label></div></aside>
+    </div>
+  </main>
+  <footer>以原书为依据，陪伴每一次好奇。</footer>
+</body>
+</html>
