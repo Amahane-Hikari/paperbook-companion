@@ -161,7 +161,7 @@ def export_book(book_dir, manifest, options=None, force=False):
                            'sentences': tts.get('sentences', [])})
     key = hashlib.sha256(json.dumps({'version': 2, 'pages': identities, 'options': settings},
                                    ensure_ascii=False, sort_keys=True).encode()).hexdigest()
-    relative = f'exports/{key}'
+    relative = f'exports/{key[:24]}'  # short dir: Windows MAX_PATH
     destination = root / relative
     if not force and (destination / 'result.json').is_file():
         try:

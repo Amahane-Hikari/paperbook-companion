@@ -339,3 +339,41 @@ def test_concurrent_qa_preserves_all_turns_and_chinese_keyword_retrieval(pipelin
     saved = service.session(book, session_id)
     assert len(saved['turns']) == 9
     assert len({turn['turn_id'] for turn in saved['turns']}) == 9
+
+
+def test_moment_search_is_sentence_level_and_gains_film_clock_after_export(pipeline):
+    client, service, *_ = pipeline
+    book = imported(client, service)
+    assert media(client, service, book)['status'] == 'succeeded'
+    before = client.get(f'/api/books/{book}/search', query_string={'q': 'fox'}).get_json()
+    assert before['success'] and before['film'] is False and isinstance(before['timing_ms'], float)
+    fox = before['moments'][0]
+    assert fox['kind'] == 'speech' and fox['page_id'] == 'p0001' and 'Fox' in fox['text']
+    assert fox['start'] == pytest.approx(.12) and fox['book_start'] is None
+    job = service.wait_for_job(client.post(f'/api/books/{book}/export', json={}).get_json()['job_id'])
+    assert job['status'] == 'succeeded', job
+    after = client.get(f'/api/books/{book}/search', query_string={'q': 'fox likes'}).get_json()
+    assert after['film'] is True
+    assert after['moments'][0]['book_start'] == pytest.approx(.12) and after['moments'][0]['book_end'] == pytest.approx(.24)
+    assert client.get(f'/api/books/{book}/search', query_string={'q': ''}).status_code == 400
+    assert client.get(f'/api/books/{book}/search', query_string={'q': 'fox', 'page_id': 'p9999'}).status_code == 400
+
+
+def test_picture_vocabulary_finds_wordless_pages_but_is_marked_inferred(pipeline):
+    client, service, calls, *_ = pipeline
+    book = imported(client, service)
+    manifest = service.manifest(book)
+    manifest['pages'][1]['objects']['detections'] = [{'label': '小松鼠<squirrel>', 'box': [1, 1, 20, 20]}]
+    manifest['pages'][1]['scene_analysis'] = {'status': 'ready', 'inferred': True, 'data': {
+        'summary': 'A squirrel holds a nut', 'scene': 'forest', 'characters': ['squirrel'], 'key_objects': ['nut']}}
+    service._save_manifest(book, manifest)
+    found = service.search(book, '小松鼠在哪')
+    assert found['moments'][0]['kind'] == 'visual' and found['moments'][0]['page_id'] == 'p0002'
+    assert found['moments'][0]['inferred'] is True and '小松鼠' in found['moments'][0]['text']
+    answer = client.post(f"/api/books/{book}/qa", json={"question": "rabbit squirrel nut"}).get_json()
+    cited = {cite['page_id']: cite for cite in calls['answer'][-1][1]}
+    assert 'p0002' in cited and cited['p0002']['visual']['inferred'] is True and cited['p0002']['excerpt'] == ''
+    assert answer['turn']['moments'] == answer['moments']
+    # Text evidence still outranks picture vocabulary.
+    ranked = service.qa(book, {'question': 'Rabbit apples squirrel'})
+    assert ranked['citations'][0]['page_id'] == 'p0001'
