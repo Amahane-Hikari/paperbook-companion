@@ -32,6 +32,29 @@
 
 常见错误包括：400 参数或路径无效、404 不存在、409 不可重试状态、413 上传超限、422 未识别到语音、502 适配器失败/模型结果不合契约、503 能力未配置。异步任务的生成失败主要通过 `job.status=failed` 和 `job.error` 返回。
 
+## 单页速读与页图入库
+
+| 方法与路径 | 请求 | 成功结果中的主要字段 |
+| --- | --- | --- |
+| POST `/api/quickbook/upload` | multipart `file` 或 `pdf` | `upload_id, page_count, page, image_url` |
+| POST `/api/quickbook/preview` | JSON `upload_id, page` | `page, page_count, image_url` |
+| POST `/api/quickbook/start` | JSON `upload_id, page, voice`（可选） | `job_id, book_id, page, page_count` |
+| GET `/api/quickbook/status/<job_id>` | 无 | `status, stage, progress, warnings` |
+| GET `/api/quickbook/result/<job_id>` | 无 | `image_url, video_url, narration, entities, warnings`。未就绪或失败返回 409 |
+| POST `/api/quickbook/point` | JSON `job_id, x, y`（`0–1`），可选 `allow_vision` | `matched, source`，命中时附 `bbox, note, audio_url` |
+| POST `/api/quickbook/ask` | JSON `job_id, question`（最多 200 字） | `answer, source, audio_url`，未生成音频时为 `null` |
+| POST `/api/ingest/page` | multipart `file` 或 JSON `image_base64`，可选 `book_id, title, page, deskew` | `book_id, manifest_path, page_count, page` |
+| POST `/api/ingest/book` | multipart 多个 `images`，可用 `orders` 指定页码。也接收 JSON `images` 数组 | `book_id, manifest_path, page_count, pages, summary` |
+| GET `/api/book/<book_id>` | 无 | `book` 和相对于数据根的 `manifest_path` |
+
+单页速读优先使用 PDF 文字层，扫描页走 OCR。缺少配音或动画时，播放器显示文字旁白和原页图，并报告原因。文字区和实体框在原页坐标中点读。问答支持 `model` 和 `page_content` 两种来源。返回的 `/api/quickbook/assets/…` 和 `/api/ingest/assets/…` URL 提供生成的媒体。同样可搭配 `/tts-story-book` 前缀访问。
+
+页图入库的坐标空间为 `normalized_0_1`。JSON 的 `images` 可以是 base64 字符串或含 `image_base64`、`filename`、`order` 的对象。页码从 1 开始。单张图片最多 16 MiB，整个请求及总页数受 `BOOK_MAX_UPLOAD_BYTES` 和 `BOOK_MAX_PAGES` 限制。数据存放于配置的 `TARGET_DIR` 下，速读上传暂存于 `output_dir/quick_uploads/`，速读结果与入库清单保存于 `bookshelf/`。
+
+视觉、旁白写作、问答和图生视频使用配置的提供方。配置对应能力后，服务会将相关页图、裁图、文本或问题发送给提供方。当前配音通过 Edge TTS 将朗读文本发送给语音服务。
+
+主题故事页的 `POST /api/analyze-video-frame` 接收 `video_path, time_seconds`，可附 `frame_base64`（JPEG/PNG）。`frame_source` 表明使用浏览器帧还是服务端截帧，`frame_size` 是返回 `objects` 像素框的参考尺寸。
+
 ## PDF 模式、manifest 与稳定页
 
 `mode` 为 `fast`、`auto` 或 `full`：
