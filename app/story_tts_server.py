@@ -2,6 +2,8 @@ from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_cors import CORS
 import requests
 import base64
+import binascii
+import io
 import threading
 import time
 import os
@@ -16,6 +18,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pydantic import BaseModel
 from typing import Optional, List, Dict
+from urllib.parse import unquote
 # 关闭Flask/Werkzeug的HTTP请求日志
 import logging
 import hashlib
@@ -1102,73 +1105,36 @@ def generate_tts():
         }), 500
 
 
+_AUDIO_EXTENSIONS = {'.wav', '.mp3', '.ogg', '.m4a', '.aac', '.flac', '.opus', '.webm'}
+_IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.avif'}
+_VIDEO_EXTENSIONS = {'.mp4', '.webm', '.mov', '.avi', '.m4v', '.mkv'}
+
+
+def _send_legacy_media(root, filepath, extensions):
+    try:
+        root = Path(root).resolve()
+        media_path = (root / unquote(filepath).replace('\\', '/')).resolve()
+        media_path.relative_to(root)
+        if media_path.suffix.lower() in extensions and media_path.is_file():
+            return send_file(media_path)
+    except (OSError, ValueError, RuntimeError):
+        pass
+    return jsonify(error='文件不存在'), 404
+
+
 @app.route('/api/audio/<path:filepath>')
 def get_audio(filepath):
-    """获取音频文件（支持子目录路径）"""
-    try:
-        # 添加调试输出
-        print(f"📝 接收到的audio filepath: {filepath}")
-        
-        # 处理URL编码的路径
-        import urllib.parse
-        filepath = urllib.parse.unquote(filepath)
-        filepath = filepath.replace('%5C', '/')
-        # 将相对路径转换为绝对路径
-        file_path = os.path.join(TARGET_DIR, filepath)
-        print(f"📝 转换后的audio绝对路径: {file_path}")
-        
-        if os.path.exists(file_path):
-            print(f"📝 音频文件存在，返回: {file_path}")
-            return send_file(file_path, mimetype='audio/wav')
-        else:
-            print(f"📝 音频文件不存在: {file_path}")
-            return jsonify({'error': '文件不存在', 'file_path': file_path}), 404
-    except Exception as e:
-        print(f"📝 音频请求错误: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+    return _send_legacy_media(TARGET_DIR, filepath, _AUDIO_EXTENSIONS)
 
 
 @app.route('/api/image/<path:filepath>')
 def get_image(filepath):
-    """获取图片文件（支持子目录路径）"""
-    try:
-        # 处理URL编码的路径
-        import urllib.parse
-        filepath = urllib.parse.unquote(filepath)
-        filepath = filepath.replace('%5C', '/')
-        # 将相对路径转换为绝对路径
-        file_path = os.path.join(TARGET_DIR, filepath)
-        if os.path.exists(file_path):
-            return send_file(file_path, mimetype='image/png')
-        else:
-            return jsonify({'error': '文件不存在'}), 404
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    return _send_legacy_media(TARGET_DIR, filepath, _IMAGE_EXTENSIONS)
 
 
 @app.route('/api/video/<path:filepath>')
 def get_video(filepath):
-    """获取视频文件（支持子目录路径）"""
-    try:
-        # 处理URL编码的路径
-        import urllib.parse
-        filepath = urllib.parse.unquote(filepath)
-        filepath = filepath.replace('%5C', '/')
-        # 将相对路径转换为绝对路径
-        file_path = os.path.join(TARGET_DIR, filepath)
-        
-        # print(f"📹 请求视频文件: {file_path}")
-        if os.path.exists(file_path):
-            # print(f"   ✅ 视频文件存在，返回文件")
-            return send_file(file_path, mimetype='video/mp4')
-        else:
-            print(f"   ❌ 视频文件不存在: {file_path}")
-            return jsonify({'error': '文件不存在'}), 404
-    except Exception as e:
-        print(f"   ❌ 获取视频文件错误: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+    return _send_legacy_media(TARGET_DIR, filepath, _VIDEO_EXTENSIONS)
 
 
 @app.route('/health')
@@ -1537,26 +1503,9 @@ def remove_from_bookshelf():
 
 @app.route('/api/history_res/<path:filepath>')
 def get_history_res(filepath):
-    """获取历史资源文件（支持项目根目录下history_res目录的资源）"""
-    try:
-        # 构建完整的文件路径 - 优先从项目根目录下的history_res获取
-        file_path = os.path.join(TARGET_DIR, 'history_res', filepath)
+    return _send_legacy_media(Path(TARGET_DIR) / 'history_res', filepath,
+                              _AUDIO_EXTENSIONS | _IMAGE_EXTENSIONS | _VIDEO_EXTENSIONS)
 
-        if os.path.exists(file_path):
-            # 自动检测文件类型
-            if file_path.endswith('.png') or file_path.endswith('.jpg') or file_path.endswith('.jpeg'):
-                return send_file(file_path, mimetype='image/png')
-            elif file_path.endswith('.wav') or file_path.endswith('.mp3'):
-                return send_file(file_path, mimetype='audio/wav')
-            else:
-                # 默认返回二进制文件
-                return send_file(file_path)
-        else:
-            print(f"历史资源文件不存在: {file_path}")
-            return jsonify({'error': '文件不存在'}), 404
-    except Exception as e:
-        print(f"获取历史资源错误: {e}")
-        return jsonify({'error': str(e)}), 500
 
 # ========== ASR 语音识别 API ==========
 async def asr_send_json(websocket, json_data):
@@ -2576,111 +2525,82 @@ def analyze_image():
 
 
 # ========== 视频帧分析 API（截取视频帧并识别主体）==========
+def _save_browser_frame(encoded, output_path):
+    max_bytes = 8 * 1024 * 1024
+    if not isinstance(encoded, str):
+        raise ValueError('帧必须是 base64 图片')
+    if encoded.startswith('data:'):
+        header, _, encoded = encoded.partition(',')
+        if header not in {'data:image/jpeg;base64', 'data:image/png;base64'}:
+            raise ValueError('帧必须是 JPEG 或 PNG 图片')
+    if not encoded or len(encoded) > (max_bytes + 2) // 3 * 4:
+        raise ValueError('帧大小无效')
+    try:
+        image = base64.b64decode(encoded, validate=True)
+        if len(image) > max_bytes:
+            raise ValueError('帧大小无效')
+        with PILImage.open(io.BytesIO(image)) as frame:
+            if frame.format not in {'JPEG', 'PNG'} or frame.width * frame.height > 3840 * 2160:
+                raise ValueError('帧格式或尺寸无效')
+            frame.convert('RGB').save(output_path)
+    except (binascii.Error, OSError, PILImage.DecompressionBombError) as exc:
+        raise ValueError('无法读取浏览器当前帧') from exc
+
+
 @app.route('/api/analyze-video-frame', methods=['POST'])
 def analyze_video_frame():
-    """截取视频指定时间点的帧并分析其中的主体"""
+    """分析浏览器当前帧。旧客户端仍可按时间让服务端截帧。"""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(success=False, error='请求必须是 JSON 对象'), 400
+    video_path = data.get('video_path')
+    if not isinstance(video_path, str) or not video_path:
+        return jsonify(success=False, error='缺少视频路径'), 400
     try:
-        data = request.json
-        video_path = data.get('video_path', '')
-        time_seconds = data.get('time_seconds', 0)
-        
-        if not video_path:
-            return jsonify({'success': False, 'error': '缺少 video_path 参数'}), 400
-        
-        print(f"📥 收到视频帧分析请求:")
-        print(f"   视频路径: {video_path}")
-        print(f"   时间点: {time_seconds}秒")
-        print(f"   当前工作目录: {os.getcwd()}")
-        
-        # 检查视频文件是否存在
-        if not os.path.exists(video_path):
-            print(f"   ❌ 文件不存在!")
-            # 尝试使用绝对路径
-            abs_path = os.path.join(os.getcwd(), video_path)
-            print(f"   尝试绝对路径: {abs_path}")
-            if os.path.exists(abs_path):
-                video_path = abs_path
-                print(f"   ✅ 使用绝对路径成功")
-            else:
-                return jsonify({'success': False, 'error': f'视频文件不存在: {video_path}'}), 404
-        
-        print(f"🎬 开始截取视频帧: {video_path}, 时间点: {time_seconds}秒")
-        
-        
-        
-        # 创建临时目录存放截取的帧
-        temp_dir = os.path.join(os.path.dirname(video_path), 'temp_frames')
-        os.makedirs(temp_dir, exist_ok=True)
-        
-        # 生成唯一的输出文件名
-        timestamp = int(time.time() * 1000)
-        output_path = os.path.join(temp_dir, f'frame_{timestamp}.png')
-        
-        # 截取帧
-        with ImageCapture(video_path) as capturer:
-            success = capturer.capture_frame_at_time(time_seconds, output_path)
-        
-        if not success:
-            return jsonify({'success': False, 'error': '截取视频帧失败'}), 500
-        
-        print(f"✅ 视频帧截取成功: {output_path}")
-        
-        # 直接使用 gemini_analyze.py 分析图片（使用本地服务）
-        print(f"🔍 开始调用 Gemini API 分析图片...", flush=True)
-        import time as time_module
-        start_time = time_module.time()
-        
-        print(f"   📄 图片路径: {output_path}", flush=True)
-        print(f"   📐 图片存在: {os.path.exists(output_path)}", flush=True)
-        
-        try:
-            
-            print(f"   🔍 使用 gemini_analyze.py 分析图片", flush=True)
-            
-            
-            result = analyzer.call({
-                "image_path": output_path,
-                "max_objects": 5,
-                "debug": False
-            })
-            
-            print(f"   ✅ API 调用成功", flush=True)
-            
-        except Exception as api_error:
-            print(f"   ❌ API 调用异常: {api_error}", flush=True)
-            import traceback
-            traceback.print_exc()
-            raise
-        
-        elapsed = time_module.time() - start_time
-        print(f"   ⏱️ Gemini API 响应时间: {elapsed:.2f}秒", flush=True)
-        
-        # 获取截取帧的实际尺寸
-        
-        with PILImage.open(output_path) as img:
-            frame_width, frame_height = img.size
-        
-        print(f"✅ 视频帧分析完成: {len(result) if isinstance(result, dict) else 0} 个主体")
-        print(f"   帧尺寸: {frame_width}x{frame_height}")
-        print(f"   分析结果: {json.dumps(result, ensure_ascii=False)}")
-        
-        # 返回结果，包含截取的帧路径和正确的尺寸
-        return jsonify({
-            'success': True,
-            'frame_path': output_path,
-            'frame_size': {'width': frame_width, 'height': frame_height},
-            'objects': result
-        })
-        
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        frame_time = float(data.get('time_seconds', 0))
+        if not math.isfinite(frame_time) or frame_time < 0:
+            raise ValueError('无效时间')
+        path = Path(_abs_session_dir(video_path))
+        relative_path = path.relative_to(Path(TARGET_DIR).resolve())
+        if len(relative_path.parts) < 2 or relative_path.parts[0] not in {'output_dir', 'bookshelf', 'history_res'}:
+            raise ValueError('视频不在媒体目录中')
+        if path.suffix.lower() not in _VIDEO_EXTENSIONS:
+            raise ValueError('无效视频格式')
+        frames = Path(_abs_session_dir(str(path.parent / 'temp_frames')))
+    except (TypeError, ValueError, OSError, OverflowError):
+        return jsonify(success=False, error='视频路径或帧时间无效'), 400
+    if not path.is_file():
+        return jsonify(success=False, error='视频文件不存在'), 404
+
+    frame_source = 'browser' if data.get('frame_base64') not in (None, '') else 'server'
+    output_path = frames / f'frame_{uuid.uuid4().hex}.png'
+    try:
+        frames.mkdir(exist_ok=True)
+        if frame_source == 'browser':
+            try:
+                _save_browser_frame(data['frame_base64'], output_path)
+            except ValueError as exc:
+                return jsonify(success=False, error=str(exc)), 400
+        else:
+            with ImageCapture(str(path)) as capturer:
+                if not capturer.capture_frame_at_time(frame_time, str(output_path)):
+                    return jsonify(success=False, error='截取视频帧失败'), 502
+        with PILImage.open(output_path) as image:
+            width, height = image.size
+        objects = analyzer.call({'image_path': str(output_path), 'max_objects': 5, 'debug': False})
+    except (OSError, ValueError, requests.RequestException):
+        return jsonify(success=False, error='视频帧分析失败，请检查视觉服务或重试'), 502
+    return jsonify(success=True, frame_path=str(output_path), frame_source=frame_source,
+                   frame_size={'width': width, 'height': height}, objects=objects)
 
 
 # ========== Stable PDF book workflow ==========
 from book_pipeline import register_book_routes, PipelineError
 from book_video import wav_duration, probe_media
+from quick_routes import routes as quick_routes
+
+
+app.register_blueprint(quick_routes)
 
 
 def _book_synthesize(text, voice, output_path, language):
@@ -2841,6 +2761,7 @@ def book_speak(book_id):
 if __name__ == '__main__':
     host, port = os.environ.get('HOST', '127.0.0.1'), int(os.environ.get('PORT', '5000'))
     print(f'纸书智伴工作台: http://{host}:{port}/')
+    print(f'单页速读: http://{host}:{port}/quick')
     print(f'主题故事创作: http://{host}:{port}/tts_v2.html')
     print('能力检查只验证本机配置与依赖；模型服务仍需实际联调。')
     app.run(host=host, port=port, debug=False, threaded=True)

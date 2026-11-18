@@ -1,0 +1,1048 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>纸书智伴 · 把一页书变成互动绘本</title>
+<style>
+  :root{
+    --ink:#20302e;
+    --muted:#667a76;
+    --paper:#fffdf7;
+    --cream:#f6f1e4;
+    --green:#0f766e;
+    --green-soft:#dff3ee;
+    --orange:#e98a3d;
+    --line:rgba(32,48,46,.12);
+    --shadow:0 18px 50px rgba(57,72,66,.16);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100%}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    color:var(--ink);
+    background:
+      radial-gradient(900px 500px at 8% -10%, #fde7cf 0%, transparent 60%),
+      radial-gradient(800px 460px at 100% 0%, #d9f2ea 0%, transparent 55%),
+      linear-gradient(180deg,#fffdf8 0%,#f4efe2 100%);
+    min-height:100vh;
+  }
+  .page{max-width:920px;margin:0 auto;padding:28px 18px 48px}
+  header{padding:8px 4px 22px;text-align:center}
+  .brand{font-size:clamp(26px,5vw,38px);font-weight:800;letter-spacing:.06em}
+  .brand .dot{color:var(--orange)}
+  .tagline{margin-top:8px;color:var(--muted);font-size:15px}
+  .card{
+    background:rgba(255,253,247,.9);
+    border:1px solid var(--line);
+    border-radius:26px;
+    box-shadow:var(--shadow);
+    padding:22px;
+    margin-bottom:18px;
+    backdrop-filter:blur(8px);
+  }
+  .card h2{margin:0 0 6px;font-size:20px}
+  .card .sub{margin:0 0 16px;color:var(--muted);font-size:14px;line-height:1.6}
+  .upload-zone{
+    border:2px dashed rgba(15,118,110,.35);
+    border-radius:22px;
+    background:linear-gradient(180deg,#fbfffd,#f1fbf7);
+    padding:38px 18px;
+    text-align:center;
+    cursor:pointer;
+    transition:border-color .2s, transform .2s, background .2s;
+  }
+  .upload-zone:hover,.upload-zone.drag{border-color:var(--green);background:#eafaf4;transform:translateY(-1px)}
+  .upload-icon{font-size:42px;line-height:1}
+  .upload-title{margin-top:12px;font-size:18px;font-weight:700}
+  .upload-sub{margin-top:6px;color:var(--muted);font-size:14px}
+  .upload-action{margin-top:16px;display:inline-block;padding:10px 20px;border-radius:999px;background:var(--green);color:#fff;font-weight:700}
+  input[type=file]{display:none}
+  .file-chip{
+    margin-top:14px;display:flex;align-items:center;gap:10px;
+    background:var(--green-soft);border-radius:14px;padding:10px 14px;font-size:14px;
+  }
+  .file-chip strong{font-weight:700}
+  .page-tools{
+    display:flex;align-items:center;justify-content:center;gap:10px;
+    flex-wrap:wrap;margin:4px 0 14px;
+  }
+  .page-tools .page-label{font-weight:700;font-size:15px}
+  .num{
+    width:62px;height:36px;border:1px solid var(--line);border-radius:10px;
+    text-align:center;font-size:16px;color:var(--ink);background:#fff;
+  }
+  .btn{
+    border:0;border-radius:999px;padding:11px 20px;font-size:15px;font-weight:700;
+    cursor:pointer;transition:transform .15s, box-shadow .15s, opacity .15s;
+    font-family:inherit;
+  }
+  .btn:hover{transform:translateY(-1px)}
+  .btn:disabled{opacity:.45;cursor:not-allowed;transform:none}
+  .btn-main{background:linear-gradient(135deg,#0f766e,#149b8e);color:#fff;box-shadow:0 10px 22px rgba(15,118,110,.24)}
+  .btn-ghost{background:#fff;color:var(--ink);border:1px solid var(--line)}
+  .btn-warm{background:linear-gradient(135deg,#f0a04b,#e98a3d);color:#fff;box-shadow:0 10px 22px rgba(233,138,61,.22)}
+  .preview-wrap{
+    position:relative;background:#e8e2d5;border-radius:18px;overflow:hidden;
+    min-height:180px;display:flex;align-items:center;justify-content:center;
+  }
+  .preview-wrap img{display:block;width:100%;max-height:52vh;object-fit:contain;background:#e8e2d5}
+  .preview-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:14px}
+  .select-row{margin-top:16px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+  .voice-group{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--muted)}
+  select{
+    height:38px;border:1px solid var(--line);border-radius:10px;padding:0 10px;
+    background:#fff;color:var(--ink);font-family:inherit;font-size:14px;
+  }
+  .inline-error{
+    margin-top:12px;padding:10px 14px;border-radius:12px;
+    background:#fff1e8;color:#9a4a12;font-size:14px;line-height:1.5;
+  }
+  .steps{display:grid;gap:8px;margin:16px 0}
+  .step{
+    display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:14px;
+    background:#faf8f1;color:var(--muted);font-size:14px;transition:.2s;
+  }
+  .step .dot{
+    width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    background:#fff;border:1px solid var(--line);font-size:13px;flex:0 0 auto;
+  }
+  .step.current{background:var(--green-soft);color:var(--ink);font-weight:700}
+  .step.current .dot{background:var(--green);border-color:var(--green);color:#fff}
+  .step.done{color:var(--green)}
+  .step.done .dot{background:var(--green-soft);border-color:transparent;color:var(--green)}
+  .progress-track{height:8px;border-radius:999px;background:#e6e0d2;overflow:hidden}
+  .progress-fill{height:100%;width:0;background:linear-gradient(90deg,#0f766e,#6fc7ad);transition:width .5s ease}
+  .progress-meta{display:flex;justify-content:space-between;gap:10px;margin-top:8px;color:var(--muted);font-size:13px;flex-wrap:wrap}
+  .progress-msg{margin-top:8px;color:var(--ink);font-size:15px;font-weight:600;min-height:22px}
+  .retry-row{margin-top:14px;display:flex;gap:10px;flex-wrap:wrap}
+  footer{text-align:center;color:var(--muted);font-size:13px;padding-top:6px}
+  footer a{color:var(--green);text-decoration:none}
+  .replay-last{display:none;margin-top:10px;text-align:center}
+  .replay-last a{color:var(--green);font-size:14px;cursor:pointer;text-decoration:underline}
+
+  /* 播放器 */
+  #player{position:fixed;inset:0;z-index:50;background:#0b1110;display:none}
+  #player.show{display:flex;align-items:center;justify-content:center}
+  #visualWrap{position:relative;width:100%;height:100%;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#0b1110}
+  #pageVideo,#pageImage{max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain;display:block;background:#0b1110}
+  #pageVideo{width:100%;height:100%;object-fit:contain}
+  #highlight{position:absolute;border:3px solid #ff5b3a;border-radius:10px;box-shadow:0 0 0 2px rgba(255,255,255,.55),0 0 24px rgba(255,91,58,.35);pointer-events:none;display:none;z-index:3}
+  #highlightLabel{position:absolute;left:0;top:-38px;background:#ff5b3a;color:#fff;font-size:14px;font-weight:700;padding:5px 10px;border-radius:8px;white-space:nowrap}
+  .player-top{
+    position:absolute;left:0;right:0;top:0;z-index:6;
+    display:flex;align-items:center;justify-content:space-between;gap:10px;
+    padding:calc(12px + env(safe-area-inset-top)) 16px 12px;
+    background:linear-gradient(180deg,rgba(0,0,0,.62),rgba(0,0,0,0));
+    color:#fff;font-size:14px;
+  }
+  .player-top .title{font-weight:700;max-width:42vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .round-btn{
+    border:1px solid rgba(255,255,255,.3);background:rgba(0,0,0,.25);color:#fff;
+    border-radius:999px;padding:8px 13px;font-size:14px;cursor:pointer;font-family:inherit;
+  }
+  .round-btn:disabled{opacity:.35;cursor:not-allowed}
+  .player-bottom{
+    position:absolute;left:0;right:0;bottom:0;z-index:6;
+    padding:14px 16px calc(16px + env(safe-area-inset-bottom));
+    background:linear-gradient(0deg,rgba(0,0,0,.76),rgba(0,0,0,.18),rgba(0,0,0,0));
+    color:#fff;
+  }
+  .subtitle{
+    max-width:860px;margin:0 auto 10px;text-align:center;font-size:clamp(15px,2.4vw,19px);
+    line-height:1.65;text-shadow:0 1px 6px rgba(0,0,0,.55);min-height:30px;
+  }
+  .subtitle.transcript{max-height:24vh;overflow:auto;white-space:pre-line}
+  #playerWarnings{max-width:860px;margin:0 auto 8px;font-size:13px}
+  #warningList{margin:6px 0;max-height:16vh;overflow:auto}
+  .controls{
+    max-width:860px;margin:0 auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:center;
+  }
+  .controls .time{margin-left:auto;color:rgba(255,255,255,.78);font-size:13px;font-variant-numeric:tabular-nums}
+  .hint{
+    position:absolute;left:50%;bottom:118px;transform:translateX(-50%);
+    background:rgba(0,0,0,.52);color:#fff;border:1px solid rgba(255,255,255,.18);
+    padding:8px 14px;border-radius:999px;font-size:13px;z-index:5;pointer-events:none;
+    transition:opacity .4s;white-space:nowrap;
+  }
+  .hint.hide{opacity:0}
+  .point-status{
+    position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+    background:rgba(15,118,110,.92);color:#fff;padding:10px 16px;border-radius:999px;font-size:14px;
+    display:none;z-index:4;white-space:nowrap;
+  }
+  .toast{
+    position:absolute;left:50%;top:72px;transform:translateX(-50%);
+    background:rgba(255,255,255,.94);color:var(--ink);padding:10px 16px;border-radius:12px;
+    font-size:14px;z-index:9;display:none;max-width:86vw;text-align:center;
+  }
+  .ask-panel{
+    position:absolute;right:16px;bottom:96px;width:min(360px,calc(100vw - 32px));
+    max-height:min(520px,70vh);background:#fffdf7;color:var(--ink);border-radius:18px;
+    box-shadow:0 20px 60px rgba(0,0,0,.35);display:none;flex-direction:column;z-index:8;overflow:hidden;
+  }
+  .ask-panel.show{display:flex}
+  .ask-head{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid var(--line);font-weight:700}
+  .ask-close{border:0;background:transparent;font-size:22px;cursor:pointer;color:var(--muted)}
+  .ask-messages{padding:12px 14px;overflow-y:auto;display:grid;gap:8px;font-size:14px;line-height:1.6;min-height:80px}
+  .msg{max-width:92%;padding:9px 12px;border-radius:12px;background:#f0ece1}
+  .msg.user{justify-self:end;background:var(--green);color:#fff}
+  .msg.thinking{color:var(--muted)}
+  .ask-input{display:flex;gap:6px;padding:10px;border-top:1px solid var(--line);align-items:center}
+  .ask-input input{flex:1;min-width:0;height:40px;border:1px solid var(--line);border-radius:10px;padding:0 10px;font-size:14px;font-family:inherit}
+  .mic{background:var(--green-soft);color:var(--green);border:0;border-radius:10px;height:40px;padding:0 10px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap}
+  .mic.recording{background:#ffe6d8;color:#b14a12}
+  .ask-send{border:0;border-radius:10px;height:40px;padding:0 14px;background:var(--green);color:#fff;font-weight:700;cursor:pointer}
+  @media (max-width:680px){
+    .page{padding:18px 12px 36px}
+    .card{padding:16px;border-radius:20px}
+    .upload-zone{padding:28px 12px}
+    .select-row{flex-direction:column;align-items:stretch}
+    .select-row .btn-main{width:100%}
+    .player-top{font-size:13px;padding-left:10px;padding-right:10px}
+    .player-top .title{max-width:30vw}
+    .controls{justify-content:center;gap:8px}
+    .controls .time{width:100%;text-align:center;margin-left:0}
+    .ask-panel{right:8px;bottom:86px}
+    .hint{bottom:150px}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <div class="brand">纸书智伴<span class="dot">。</span></div>
+    <div class="tagline">把一本书的一页，变成会动、会讲、能问答的互动绘本</div>
+  </header>
+
+  <section class="card" id="stageUpload">
+    <h2>上传一本 PDF</h2>
+    <p class="sub">拖进来，或者点一下选择文件。扫描版绘本也可以，生成时会自动识别页面上的文字和画面。</p>
+    <div class="upload-zone" id="dropZone" role="button" tabindex="0" aria-label="选择 PDF 文件">
+      <div class="upload-icon">📄</div>
+      <div class="upload-title">把 PDF 拖到这里</div>
+      <div class="upload-sub">或点击选择文件 · 支持扫描版 PDF</div>
+      <div class="upload-action">选择 PDF 文件</div>
+      <input type="file" id="fileInput" accept="application/pdf,.pdf">
+    </div>
+    <div class="file-chip" id="fileChip" style="display:none">
+      <span>📘</span><strong id="fileName"></strong><span id="filePages"></span>
+    </div>
+    <div class="inline-error" id="uploadError" style="display:none"></div>
+  </section>
+
+  <section class="card" id="stageSelect" style="display:none">
+    <h2>选一页</h2>
+    <p class="sub">先翻到你要的那一页。生成只会用这一页的内容，不会改动原书。</p>
+    <div class="page-tools">
+      <button class="btn btn-ghost" id="prevPage">上一页</button>
+      <span class="page-label">第 <input class="num" id="pageInput" type="number" min="1" value="1" inputmode="numeric"> 页 / 共 <span id="pageTotal">1</span> 页</span>
+      <button class="btn btn-ghost" id="nextPage">下一页</button>
+    </div>
+    <div class="preview-wrap">
+      <img id="previewImg" alt="当前页预览">
+      <div class="preview-loading" id="previewLoading" style="display:none">正在打开这一页…</div>
+    </div>
+    <div class="select-row">
+      <div class="voice-group">
+        <span>旁白音色</span>
+        <select id="voiceSelect">
+          <option value="xiaosi">小思 · 元气</option>
+          <option value="xiaoyuan">小源 · 温柔</option>
+          <option value="niudun">牛顿 · 浑厚</option>
+          <option value="oula">欧拉 · 成熟</option>
+        </select>
+      </div>
+      <button class="btn btn-main" id="generateBtn">生成这一页的互动绘本</button>
+    </div>
+    <div class="inline-error" id="selectError" style="display:none"></div>
+    <div class="replay-last" id="replayLastWrap"><a id="replayLast">继续播放刚才生成的绘本</a></div>
+  </section>
+
+  <section class="card" id="stageProgress" style="display:none">
+    <h2 id="progressTitle">正在把这一页做成互动绘本</h2>
+    <p class="sub">不用一直盯着，完成后会自动进入播放。离开这个页面也不会中断生成。</p>
+    <div class="steps" id="stageList"></div>
+    <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+    <div class="progress-meta"><span id="elapsedLabel">已用 0 秒</span><span id="progressPercent">0%</span></div>
+    <div class="progress-msg" id="progressMsg">准备开始</div>
+    <div class="inline-error" id="progressError" style="display:none"></div>
+    <div class="retry-row" id="retryRow" style="display:none">
+      <button class="btn btn-warm" id="retryBtn">重新生成这一页</button>
+      <button class="btn btn-ghost" id="backToSelectBtn">返回选页</button>
+    </div>
+  </section>
+
+  <footer>
+    <a href="./books">整本绘本工作台</a> · <a href="./tts_v2.html">绘声慧聊编辑台</a>
+  </footer>
+</div>
+
+<div id="player" aria-hidden="true">
+  <div id="visualWrap">
+    <video id="pageVideo" playsinline webkit-playsinline loop muted></video>
+    <img id="pageImage" alt="互动绘本画面" style="display:none">
+    <div id="highlight"><div id="highlightLabel"></div></div>
+    <div class="hint" id="hint">点画面上的东西，听一听讲解</div>
+    <div class="point-status" id="pointStatus">正在识别画面里的东西…</div>
+    <div class="toast" id="toast"></div>
+  </div>
+  <div class="player-top">
+    <button class="round-btn" id="backBtn">返回选页</button>
+    <span class="title" id="playerTitle"></span>
+    <div style="display:flex;align-items:center;gap:6px">
+      <button class="round-btn" id="playerPrev" disabled>上一页</button>
+      <span id="playerPage"></span>
+      <button class="round-btn" id="playerNext" disabled>下一页</button>
+    </div>
+  </div>
+  <div class="player-bottom">
+    <div class="subtitle" id="subtitle"></div>
+    <details id="playerWarnings" hidden>
+      <summary>生成情况</summary>
+      <ul id="warningList"></ul>
+    </details>
+    <div class="controls">
+      <button class="round-btn" id="playPause">暂停</button>
+      <button class="round-btn" id="replayBtn">重播</button>
+      <button class="round-btn" id="visualMode" hidden>原图点读</button>
+      <button class="round-btn" id="askToggle">问一问</button>
+      <span class="time" id="timeLabel">0:00 / 0:00</span>
+    </div>
+  </div>
+  <div class="ask-panel" id="askPanel">
+    <div class="ask-head"><span>故事小助手</span><button class="ask-close" id="askClose" aria-label="关闭">×</button></div>
+    <div class="ask-messages" id="askMessages"></div>
+    <div class="ask-input">
+      <button class="mic" id="micBtn">按住说话</button>
+      <input id="askInput" placeholder="输入你的问题" autocomplete="off">
+      <button class="ask-send" id="askSend">发送</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const appPath = location.pathname.replace(/\/quick(?:\.html)?\/?$/, '');
+const endpoint = (path) => appPath + path;
+const state = {
+  upload: null,
+  uploadRequest: 0,
+  previewRequest: 0,
+  generation: 0,
+  page: 1,
+  jobId: null,
+  result: null,
+  playing: false,
+  pointBusy: false,
+  pointWasPlaying: false,
+  askWasPlaying: false,
+  askGreeted: false,
+  pollTimer: null,
+  recording: false,
+  micRequest: 0,
+  recorder: null,
+  samples: [],
+};
+
+function showError(el, message){
+  if(!el) return;
+  el.textContent = message;
+  el.style.display = message ? 'block' : 'none';
+}
+function toast(message, ms=2200){
+  const t = $('toast');
+  t.textContent = message;
+  t.style.display = 'block';
+  clearTimeout(t._timer);
+  t._timer = setTimeout(()=>{ t.style.display='none'; }, ms);
+}
+function mmss(sec){
+  sec = Math.max(0, Number(sec)||0);
+  const m = Math.floor(sec/60), s = Math.floor(sec%60);
+  return `${m}:${String(s).padStart(2,'0')}`;
+}
+
+/* ---------------- 上传 ---------------- */
+const dropZone = $('dropZone');
+const fileInput = $('fileInput');
+dropZone.addEventListener('click', e=>{ if(e.target !== fileInput) fileInput.click(); });
+dropZone.addEventListener('keydown', e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); fileInput.click(); }});
+['dragenter','dragover'].forEach(ev=>dropZone.addEventListener(ev, e=>{e.preventDefault();dropZone.classList.add('drag')}));
+['dragleave','drop'].forEach(ev=>dropZone.addEventListener(ev, e=>{e.preventDefault();dropZone.classList.remove('drag')}));
+dropZone.addEventListener('drop', e=>{
+  const file = e.dataTransfer.files && e.dataTransfer.files[0];
+  if(file) uploadFile(file);
+});
+fileInput.addEventListener('change', ()=>{
+  const file = fileInput.files && fileInput.files[0];
+  if(file) uploadFile(file);
+});
+
+async function uploadFile(file){
+  if(!file.name.toLowerCase().endsWith('.pdf')){
+    showError($('uploadError'), '请选择 PDF 文件');
+    return;
+  }
+  const requestId = ++state.uploadRequest;
+  showError($('uploadError'), '');
+  $('dropZone').querySelector('.upload-action').textContent = '正在读取 PDF…';
+  const fd = new FormData();
+  fd.append('file', file);
+  try{
+    const resp = await fetch(endpoint('/api/quickbook/upload'), {method:'POST', body:fd});
+    const data = await resp.json();
+    if(requestId !== state.uploadRequest) return;
+    if(!resp.ok || !data.success) throw new Error(data.error || '这个 PDF 暂时读不出来');
+    ++state.generation;
+    ++state.previewRequest;
+    clearTimeout(state.pollTimer);
+    state.upload = data;
+    state.page = 1;
+    state.jobId = null;
+    state.result = null;
+    $('fileName').textContent = data.filename || file.name;
+    $('filePages').textContent = ` · 共 ${data.page_count} 页`;
+    $('fileChip').style.display = 'flex';
+    $('dropZone').querySelector('.upload-action').textContent = '重新选择 PDF 文件';
+    $('pageTotal').textContent = data.page_count;
+    $('pageInput').max = data.page_count;
+    $('pageInput').value = 1;
+    $('previewImg').src = endpoint(data.image_url);
+    $('previewImg').style.display = 'block';
+    $('previewImg').style.opacity = 1;
+    $('previewLoading').style.display = 'none';
+    $('stageSelect').style.display = 'block';
+    $('stageProgress').style.display = 'none';
+    $('replayLastWrap').style.display = 'none';
+    $('generateBtn').disabled = false;
+    $('generateBtn').textContent = '生成这一页的互动绘本';
+    syncPageToolbar();
+    window.scrollTo({top: $('stageSelect').offsetTop - 20, behavior:'smooth'});
+  }catch(e){
+    if(requestId !== state.uploadRequest) return;
+    showError($('uploadError'), e.message || 'PDF 读取失败，请换一个文件再试');
+    $('dropZone').querySelector('.upload-action').textContent = '选择 PDF 文件';
+  }
+}
+
+/* ---------------- 选页 ---------------- */
+function syncPageToolbar(){
+  const total = state.upload ? state.upload.page_count : 1;
+  $('pageInput').value = state.page;
+  $('pageTotal').textContent = total;
+  $('prevPage').disabled = state.page <= 1;
+  $('nextPage').disabled = state.page >= total;
+}
+async function changePage(delta){
+  if(!state.upload) return;
+  const total = state.upload.page_count;
+  const target = Math.max(1, Math.min(total, state.page + delta));
+  if(target === state.page) return;
+  await loadPreview(target);
+}
+async function loadPreview(page){
+  if(!state.upload) return;
+  const requestId = ++state.previewRequest;
+  const total = state.upload.page_count;
+  page = Math.max(1, Math.min(total, Math.trunc(Number(page))||1));
+  $('previewLoading').style.display = 'flex';
+  $('previewImg').style.opacity = .35;
+  $('generateBtn').disabled = true;
+  try{
+    const resp = await fetch(endpoint('/api/quickbook/preview'), {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({upload_id: state.upload.upload_id, page})
+    });
+    const data = await resp.json();
+    if(requestId !== state.previewRequest) return;
+    if(!resp.ok || !data.success) throw new Error(data.error || '这一页暂时无法预览');
+    state.page = data.page;
+    $('previewImg').src = endpoint(data.image_url);
+    showError($('selectError'), '');
+  }catch(e){
+    if(requestId === state.previewRequest) showError($('selectError'), e.message || '这一页暂时无法预览');
+  }finally{
+    if(requestId === state.previewRequest){
+      syncPageToolbar();
+      $('previewLoading').style.display = 'none';
+      $('previewImg').style.opacity = 1;
+      $('generateBtn').disabled = false;
+    }
+  }
+}
+$('prevPage').addEventListener('click', ()=>changePage(-1));
+$('nextPage').addEventListener('click', ()=>changePage(1));
+$('pageInput').addEventListener('change', ()=>loadPreview($('pageInput').value));
+
+/* ---------------- 生成与轮询 ---------------- */
+function renderStages(stages){
+  const list = $('stageList');
+  list.innerHTML = '';
+  (stages || []).forEach((item)=>{
+    const div = document.createElement('div');
+    div.className = 'step ' + (item.state || 'pending');
+    const dot = document.createElement('span');
+    const label = document.createElement('span');
+    dot.className = 'dot';
+    dot.textContent = item.state === 'done' ? '✓' : (item.state === 'current' ? '●' : '○');
+    label.textContent = item.label;
+    div.append(dot, label);
+    list.appendChild(div);
+  });
+}
+async function startGenerate(){
+  if(!state.upload) return;
+  const generation = ++state.generation;
+  clearTimeout(state.pollTimer);
+  showError($('selectError'), '');
+  $('generateBtn').disabled = true;
+  $('generateBtn').textContent = '正在开始…';
+  $('stageSelect').style.display = 'none';
+  $('stageProgress').style.display = 'block';
+  $('retryRow').style.display = 'none';
+  showError($('progressError'), '');
+  $('progressTitle').textContent = '正在把这一页做成互动绘本';
+  $('progressFill').style.width = '0%';
+  $('progressPercent').textContent = '0%';
+  $('elapsedLabel').textContent = '已用 0 秒';
+  $('progressMsg').textContent = '正在准备这一页';
+  renderStages([]);
+  pickStageAndScroll();
+  try{
+    const resp = await fetch(endpoint('/api/quickbook/start'), {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({upload_id: state.upload.upload_id, page: state.page, voice: $('voiceSelect').value})
+    });
+    const data = await resp.json();
+    if(generation !== state.generation) return;
+    if(!resp.ok || !data.success) throw new Error(data.error || '暂时无法开始生成');
+    state.jobId = data.job_id;
+    state.result = null;
+    pollStatus(generation);
+  }catch(e){
+    if(generation !== state.generation) return;
+    showError($('progressError'), e.message || '暂时无法开始生成，请稍后再试');
+    $('retryRow').style.display = 'flex';
+    $('generateBtn').disabled = false;
+    $('generateBtn').textContent = '生成这一页的互动绘本';
+  }
+}
+function pickStageAndScroll(){
+  window.scrollTo({top: $('stageProgress').offsetTop - 16, behavior:'smooth'});
+}
+async function pollStatus(generation){
+  if(!state.jobId || generation !== state.generation) return;
+  clearTimeout(state.pollTimer);
+  try{
+    const resp = await fetch(endpoint(`/api/quickbook/status/${encodeURIComponent(state.jobId)}`), {cache:'no-store'});
+    const data = await resp.json();
+    if(generation !== state.generation) return;
+    if(resp.status === 404){
+      showError($('progressError'), data.error || '任务已失效，请重新生成');
+      $('retryRow').style.display = 'flex';
+      return;
+    }
+    if(!resp.ok || !data.success) throw new Error(data.error || '任务状态读取失败');
+    showError($('progressError'), '');
+    $('progressFill').style.width = `${data.progress || 0}%`;
+    $('progressPercent').textContent = `${data.progress || 0}%`;
+    $('elapsedLabel').textContent = `已用 ${Math.round(data.elapsed_seconds || 0)} 秒`;
+    $('progressMsg').textContent = data.message || data.stage_label || '正在处理';
+    renderStages(data.stages);
+    if(data.status === 'ready'){
+      await loadResult(generation);
+      return;
+    }
+    if(data.status === 'failed'){
+      showError($('progressError'), data.error || '生成失败，请重新试一次');
+      $('progressTitle').textContent = '这一页没有生成成功';
+      $('retryRow').style.display = 'flex';
+      $('generateBtn').disabled = false;
+      $('generateBtn').textContent = '生成这一页的互动绘本';
+      return;
+    }
+    state.pollTimer = setTimeout(()=>pollStatus(generation), 1200);
+  }catch(e){
+    if(generation !== state.generation) return;
+    showError($('progressError'), e.message || '任务状态读取失败，正在重试');
+    state.pollTimer = setTimeout(()=>pollStatus(generation), 2500);
+  }
+}
+async function loadResult(generation){
+  try{
+    const resp = await fetch(endpoint(`/api/quickbook/result/${encodeURIComponent(state.jobId)}`), {cache:'no-store'});
+    const data = await resp.json();
+    if(generation !== state.generation) return;
+    if(!resp.ok || !data.success) throw new Error(data.error || '结果读取失败');
+    state.result = data;
+    $('stageProgress').style.display = 'none';
+    $('stageSelect').style.display = 'block';
+    $('generateBtn').disabled = false;
+    $('generateBtn').textContent = '再生成一次';
+    $('replayLastWrap').style.display = 'block';
+    openPlayer(data);
+  }catch(e){
+    if(generation !== state.generation) return;
+    showError($('progressError'), e.message || '结果读取失败，请返回重新生成');
+    $('retryRow').style.display = 'flex';
+  }
+}
+$('generateBtn').addEventListener('click', startGenerate);
+$('retryBtn').addEventListener('click', startGenerate);
+$('backToSelectBtn').addEventListener('click', ()=>{
+  ++state.generation;
+  clearTimeout(state.pollTimer);
+  $('stageProgress').style.display = 'none';
+  $('stageSelect').style.display = 'block';
+  $('generateBtn').disabled = false;
+  $('generateBtn').textContent = '生成这一页的互动绘本';
+  $('retryRow').style.display = 'none';
+});
+
+/* ---------------- 播放器 ---------------- */
+const player = $('player');
+const video = $('pageVideo');
+const image = $('pageImage');
+const audio = new Audio();
+audio.preload = 'auto';
+let currentSegments = [];
+let highlightTimer = null;
+let interactionClip = null;
+let showOriginal = false;
+
+function syncVisual(){
+  const animated = video.hasAttribute('src') && !showOriginal;
+  video.style.display = animated ? 'block' : 'none';
+  image.style.display = animated ? 'none' : 'block';
+  if(!animated) video.pause();
+  else if(state.playing) video.play().catch(()=>{});
+  const visualOnly = !audio.hasAttribute('src');
+  $('playPause').disabled = !animated && visualOnly;
+  $('replayBtn').disabled = !animated && visualOnly;
+  if(!animated && visualOnly) pauseAll();
+  $('visualMode').textContent = showOriginal ? '返回动态画面' : '原图点读';
+  hideHighlight();
+}
+
+function openPlayer(result){
+  stopInteraction();
+  pauseAll();
+  state.result = result;
+  state.playing = false;
+  currentSegments = (result.narration && result.narration.segments) || [];
+  $('playerTitle').textContent = result.title || '这一页的互动绘本';
+  $('playerPage').textContent = `第 ${result.page} / ${result.page_count} 页`;
+  $('playerPrev').disabled = true;
+  $('playerNext').disabled = true;
+  $('playerPrev').title = '当前只生成了这一页，返回选页可以换一页';
+  $('playerNext').title = '当前只生成了这一页，返回选页可以换一页';
+  const hasAudio = Boolean(result.narration?.audio_url);
+  $('subtitle').classList.toggle('transcript', !hasAudio);
+  $('subtitle').textContent = hasAudio ? (currentSegments[0]?.text || '') : currentSegments.map(segment=>segment.text).join('\n');
+  $('warningList').replaceChildren(...(result.warnings || []).map(warning=>{
+    const item = document.createElement('li');
+    item.textContent = warning;
+    return item;
+  }));
+  $('playerWarnings').hidden = $('warningList').childElementCount === 0;
+  $('playerWarnings').open = false;
+  $('timeLabel').textContent = `0:00 / ${mmss(result.narration ? result.narration.duration : 0)}`;
+  $('timeLabel').hidden = !hasAudio;
+  $('playPause').hidden = !hasAudio && !result.video_url;
+  $('replayBtn').hidden = !hasAudio && !result.video_url;
+  $('visualMode').hidden = !result.video_url;
+  $('highlight').style.display = 'none';
+  $('pointStatus').style.display = 'none';
+  $('askPanel').classList.remove('show');
+  $('askMessages').innerHTML = '';
+  state.askGreeted = false;
+  image.src = endpoint(result.image_url);
+  video.removeAttribute('src');
+  video.poster = image.src;
+  if(result.video_url){
+    video.src = endpoint(result.video_url);
+  }
+  video.load();
+  showOriginal = false;
+  if(hasAudio) audio.src = endpoint(result.narration.audio_url);
+  else audio.removeAttribute('src');
+  audio.load();
+  syncVisual();
+  state.pointBusy = false;
+  player.classList.add('show');
+  player.setAttribute('aria-hidden','false');
+  $('hint').classList.remove('hide');
+  setTimeout(()=>{ $('hint').classList.add('hide'); }, 5000);
+  playAll(true);
+}
+function playAll(autoplay = false){
+  if(!player.classList.contains('show')) return;
+  const audioReady = audio.hasAttribute('src');
+  const videoReady = video.hasAttribute('src') && !showOriginal;
+  if(!audioReady && !videoReady) return;
+  if(audioReady && videoReady) video.play().catch(()=>{});
+  const media = audioReady ? audio : video;
+  const activeResult = state.result;
+  media.play().then(()=>{
+    if(state.result !== activeResult || media.paused) return;
+    state.playing = true;
+    $('playPause').textContent = '暂停';
+  }).catch(()=>{
+    if(state.result !== activeResult || !player.classList.contains('show')) return;
+    pauseAll();
+    if(autoplay) toast('点“播放”开始', 3200);
+  });
+}
+function pauseAll(){
+  audio.pause();
+  video.pause();
+  state.playing = false;
+  $('playPause').textContent = '播放';
+}
+function resumeAll(){
+  playAll();
+}
+$('playPause').addEventListener('click', ()=>{
+  if(state.playing) pauseAll(); else resumeAll();
+});
+$('replayBtn').addEventListener('click', ()=>{
+  if(audio.hasAttribute('src')) audio.currentTime = 0;
+  if(video.hasAttribute('src')) video.currentTime = 0;
+  hideHighlight();
+  resumeAll();
+  updateSubtitle();
+});
+$('visualMode').addEventListener('click', ()=>{
+  showOriginal = !showOriginal;
+  syncVisual();
+  if(!showOriginal && !audio.hasAttribute('src')) playAll();
+});
+video.addEventListener('error', ()=>{
+  if(!video.hasAttribute('src')) return;
+  video.removeAttribute('src');
+  video.load();
+  syncVisual();
+  $('visualMode').hidden = true;
+  if(!audio.hasAttribute('src')){
+    $('playPause').hidden = true;
+    $('replayBtn').hidden = true;
+  }
+  toast('动态画面无法播放，已切换为原页静图');
+});
+$('backBtn').addEventListener('click', ()=>{
+  cancelRecording();
+  stopInteraction();
+  pauseAll();
+  player.classList.remove('show');
+  player.setAttribute('aria-hidden','true');
+  $('askPanel').classList.remove('show');
+  $('stageSelect').style.display = 'block';
+  $('replayLastWrap').style.display = 'block';
+});
+$('replayLast').addEventListener('click', ()=>{ if(state.result) openPlayer(state.result); });
+$('playerPrev').addEventListener('click', ()=>toast('当前只生成了这一页，返回选页可以换一页生成'));
+$('playerNext').addEventListener('click', ()=>toast('当前只生成了这一页，返回选页可以换一页生成'));
+
+audio.addEventListener('timeupdate', updateSubtitle);
+audio.addEventListener('loadedmetadata', ()=>{
+  $('timeLabel').textContent = `${mmss(audio.currentTime)} / ${mmss(audio.duration)}`;
+});
+audio.addEventListener('play', ()=>{ state.playing = true; $('playPause').textContent = '暂停'; });
+audio.addEventListener('pause', ()=>{ state.playing = false; $('playPause').textContent = '播放'; });
+audio.addEventListener('ended', ()=>{
+  $('subtitle').textContent = currentSegments.length ? currentSegments[currentSegments.length-1].text : '';
+  pauseAll();
+});
+function updateSubtitle(){
+  if(!audio.hasAttribute('src')) return;
+  const t = audio.currentTime || 0;
+  $('timeLabel').textContent = `${mmss(t)} / ${mmss(audio.duration || (state.result && state.result.narration ? state.result.narration.duration : 0))}`;
+  if(!currentSegments.length) return;
+  let seg = currentSegments[0];
+  for(const item of currentSegments){ if(t >= item.start) seg = item; }
+  $('subtitle').textContent = seg.text || '';
+}
+
+/* ---------------- 点读 ---------------- */
+function contentRect(el){
+  const r = el.getBoundingClientRect();
+  const mw = el.videoWidth || el.naturalWidth || (state.result && state.result.image_size && state.result.image_size.width) || 1;
+  const mh = el.videoHeight || el.naturalHeight || (state.result && state.result.image_size && state.result.image_size.height) || 1;
+  const scale = Math.min(r.width / mw, r.height / mh);
+  const width = mw * scale, height = mh * scale;
+  return {left:r.left + (r.width-width)/2, top:r.top + (r.height-height)/2, width, height};
+}
+$('visualWrap').addEventListener('click', async (e)=>{
+  if(!state.result || state.pointBusy || $('askPanel').classList.contains('show')) return;
+  if(video.hasAttribute('src') && !showOriginal){
+    showOriginal = true;
+    syncVisual();
+    toast('已切换为原页图，点选要讲解的位置');
+    return;
+  }
+  const rect = contentRect(image);
+  if(e.clientX < rect.left || e.clientX > rect.left+rect.width || e.clientY < rect.top || e.clientY > rect.top+rect.height) return;
+  const x = (e.clientX - rect.left) / rect.width;
+  const y = (e.clientY - rect.top) / rect.height;
+  await doPointRead(x, y);
+});
+async function doPointRead(x, y){
+  const result = state.result;
+  state.pointBusy = true;
+  state.pointWasPlaying = state.playing;
+  pauseAll();
+  $('pointStatus').textContent = '正在识别画面里的东西…';
+  $('pointStatus').style.display = 'block';
+  try{
+    const resp = await fetch(endpoint('/api/quickbook/point'), {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({job_id: result.job_id, x, y, allow_vision:true})
+    });
+    const data = await resp.json();
+    if(result !== state.result || !player.classList.contains('show') || !state.pointBusy) return;
+    if(!resp.ok || !data.success) throw new Error(data.error || '点读暂时不可用');
+    if(!data.matched){
+      toast(data.message || '这里没有可讲解的内容，换个位置点点看', 2600);
+      finishPointRead();
+      return;
+    }
+    showHighlight(data.bbox, data.label || `🔍 ${data.name}`);
+    if(data.note) toast(data.note, 3600);
+    if(data.audio_url){
+      const clip = new Audio(endpoint(data.audio_url));
+      interactionClip = clip;
+      clip.onended = ()=>finishPointRead();
+      clip.onerror = ()=>finishPointRead();
+      clip.play().catch(()=>{ if(interactionClip === clip) finishPointRead(); });
+    }else{
+      highlightTimer = setTimeout(finishPointRead, 2600);
+    }
+  }catch(e){
+    if(result === state.result && player.classList.contains('show') && state.pointBusy){
+      toast(e.message || '点读暂时不可用，请稍后再试', 2600);
+      finishPointRead();
+    }
+  }finally{
+    if(result === state.result) $('pointStatus').style.display = 'none';
+  }
+}
+function showHighlight(bbox, label){
+  if(!bbox) return;
+  const el = (video.style.display !== 'none' && video.style.display !== '') ? video : image;
+  const rect = contentRect(el);
+  const wrapRect = $('visualWrap').getBoundingClientRect();
+  const box = $('highlight');
+  box.style.left = `${rect.left - wrapRect.left + bbox[0]*rect.width}px`;
+  box.style.top = `${rect.top - wrapRect.top + bbox[1]*rect.height}px`;
+  box.style.width = `${(bbox[2]-bbox[0])*rect.width}px`;
+  box.style.height = `${(bbox[3]-bbox[1])*rect.height}px`;
+  box.style.display = 'block';
+  $('highlightLabel').textContent = label;
+  clearTimeout(highlightTimer);
+}
+function hideHighlight(){ $('highlight').style.display = 'none'; }
+function finishPointRead(){
+  const shouldResume = state.pointWasPlaying;
+  stopInteraction();
+  if(shouldResume) resumeAll();
+}
+function stopInteraction(){
+  if(interactionClip){
+    interactionClip.onended = null;
+    interactionClip.onerror = null;
+    interactionClip.pause();
+    interactionClip = null;
+  }
+  clearTimeout(highlightTimer);
+  hideHighlight();
+  state.pointBusy = false;
+  state.pointWasPlaying = false;
+}
+
+/* ---------------- 问答 ---------------- */
+$('askToggle').addEventListener('click', ()=>{
+  const panel = $('askPanel');
+  if(panel.classList.contains('show')){
+    closeAsk();
+    return;
+  }
+  state.askWasPlaying = state.playing || state.pointWasPlaying;
+  stopInteraction();
+  pauseAll();
+  panel.classList.add('show');
+  if(!state.askGreeted){
+    addMsg('你好，我是这本绘本的小助手。这一页里的人物、动作、画面，都可以问我。', 'bot');
+    state.askGreeted = true;
+  }
+  setTimeout(()=>$('askInput').focus(), 120);
+});
+$('askClose').addEventListener('click', closeAsk);
+function closeAsk(){
+  $('askPanel').classList.remove('show');
+  cancelRecording();
+  stopInteraction();
+  if(state.askWasPlaying) resumeAll();
+  state.askWasPlaying = false;
+}
+function addMsg(text, role){
+  const div = document.createElement('div');
+  div.className = 'msg' + (role === 'user' ? ' user' : (role === 'thinking' ? ' thinking' : ''));
+  div.textContent = text;
+  $('askMessages').appendChild(div);
+  $('askMessages').scrollTop = $('askMessages').scrollHeight;
+  return div;
+}
+async function askQuestion(){
+  const question = ($('askInput').value || '').trim();
+  const result = state.result;
+  if(!question || !result || $('askSend').disabled) return;
+  $('askInput').value = '';
+  addMsg(question, 'user');
+  const thinking = addMsg('正在想…', 'thinking');
+  $('askSend').disabled = true;
+  try{
+    const resp = await fetch(endpoint('/api/quickbook/ask'), {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({job_id: result.job_id, question})
+    });
+    const data = await resp.json();
+    if(result !== state.result || !player.classList.contains('show')) return;
+    if(!resp.ok || !data.success) throw new Error(data.error || '小助手暂时没有响应');
+    thinking.remove();
+    addMsg(data.answer, 'bot');
+    if(data.audio_url && $('askPanel').classList.contains('show')){
+      stopInteraction();
+      const clip = new Audio(endpoint(data.audio_url));
+      interactionClip = clip;
+      clip.play().catch(()=>{});
+    }
+  }catch(e){
+    thinking.textContent = e.message || '小助手暂时没有响应，请稍后再试';
+    thinking.classList.add('thinking');
+  }finally{
+    $('askSend').disabled = false;
+  }
+}
+$('askSend').addEventListener('click', askQuestion);
+$('askInput').addEventListener('keydown', e=>{ if(e.key === 'Enter') askQuestion(); });
+
+/* 录音并转 WAV，交给服务端本地识别 */
+$('micBtn').hidden = true;
+fetch(endpoint('/api/capabilities'), {cache:'no-store'}).then(resp=>resp.json()).then(data=>{
+  $('micBtn').hidden = !data.capabilities?.asr;
+}).catch(()=>{});
+$('micBtn').addEventListener('pointerdown', startRecord);
+['pointerup','pointerleave','pointercancel'].forEach(ev=>$('micBtn').addEventListener(ev, stopRecord));
+async function startRecord(e){
+  e.preventDefault();
+  if(state.recording) return;
+  const micRequest = ++state.micRequest;
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+    if(micRequest !== state.micRequest){
+      stream.getTracks().forEach(track=>track.stop());
+      return;
+    }
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const source = ctx.createMediaStreamSource(stream);
+    const processor = ctx.createScriptProcessor(4096, 1, 1);
+    state.samples = [];
+    processor.onaudioprocess = (ev)=>{
+      if(!state.recording) return;
+      state.samples.push(new Float32Array(ev.inputBuffer.getChannelData(0)));
+    };
+    source.connect(processor);
+    processor.connect(ctx.destination);
+    state.recorder = {stream, ctx, source, processor};
+    state.recording = true;
+    $('micBtn').classList.add('recording');
+    $('micBtn').textContent = '松开结束';
+  }catch(err){
+    toast('没有拿到麦克风权限，可以直接打字提问', 3000);
+  }
+}
+async function stopRecord(e){
+  const micRequest = ++state.micRequest;
+  if(!state.recording) return;
+  e.preventDefault();
+  state.recording = false;
+  $('micBtn').classList.remove('recording');
+  $('micBtn').textContent = '识别中…';
+  const rec = state.recorder;
+  state.recorder = null;
+  try{
+    rec.source.disconnect();
+    rec.processor.disconnect();
+    rec.stream.getTracks().forEach(t=>t.stop());
+    const blob = encodeWav(state.samples, rec.ctx.sampleRate);
+    await rec.ctx.close();
+    const fd = new FormData();
+    fd.append('audio', blob, 'speech.wav');
+    const resp = await fetch(endpoint('/api/asr'), {method:'POST', body:fd});
+    const data = await resp.json();
+    if(micRequest !== state.micRequest) return;
+    if(!resp.ok || !data.success) throw new Error(data.error || '没有听清，再说一遍试试');
+    if(data.text) $('askInput').value = data.text;
+    else toast('没有听清，可以直接打字提问', 2600);
+  }catch(err){
+    if(micRequest === state.micRequest) toast(err.message || '语音识别暂时不可用，可以直接打字提问', 3000);
+  }finally{
+    if(micRequest === state.micRequest) $('micBtn').textContent = '按住说话';
+  }
+}
+function cancelRecording(){
+  ++state.micRequest;
+  const rec = state.recorder;
+  state.recorder = null;
+  state.recording = false;
+  if(rec){
+    rec.stream.getTracks().forEach(track=>track.stop());
+    rec.ctx.close().catch(()=>{});
+  }
+  $('micBtn').classList.remove('recording');
+  $('micBtn').textContent = '按住说话';
+}
+function encodeWav(chunks, sampleRate){
+  let total = 0;
+  for(const c of chunks) total += c.length;
+  const merged = new Float32Array(total);
+  let offset = 0;
+  for(const c of chunks){ merged.set(c, offset); offset += c.length; }
+  const targetRate = 16000;
+  let data = merged;
+  if(sampleRate !== targetRate && merged.length){
+    const targetLen = Math.max(1, Math.round(merged.length * targetRate / sampleRate));
+    const src = new Float32Array(merged.length);
+    for(let i=0;i<merged.length;i++) src[i] = merged[i];
+    const out = new Float32Array(targetLen);
+    for(let i=0;i<targetLen;i++){
+      const pos = i * (merged.length - 1) / Math.max(1, targetLen - 1);
+      const idx = Math.floor(pos), frac = pos - idx;
+      out[i] = src[idx] * (1-frac) + (src[Math.min(idx+1, src.length-1)] || 0) * frac;
+    }
+    data = out;
+  }
+  const buffer = new ArrayBuffer(44 + data.length * 2);
+  const view = new DataView(buffer);
+  const writeStr = (offset, str)=>{
+    for(let i=0;i<str.length;i++) view.setUint8(offset+i, str.charCodeAt(i));
+  };
+  writeStr(0,'RIFF'); view.setUint32(4, 36 + data.length*2, true); writeStr(8,'WAVE');
+  writeStr(12,'fmt '); view.setUint32(16,16,true); view.setUint16(20,1,true);
+  view.setUint16(22,1,true); view.setUint32(24,targetRate,true);
+  view.setUint32(28,targetRate*2,true); view.setUint16(32,2,true); view.setUint16(34,16,true);
+  writeStr(36,'data'); view.setUint32(40,data.length*2,true);
+  let p = 44;
+  for(let i=0;i<data.length;i++,p+=2){
+    const s = Math.max(-1, Math.min(1, data[i]));
+    view.setInt16(p, s < 0 ? s*0x8000 : s*0x7fff, true);
+  }
+  return new Blob([buffer], {type:'audio/wav'});
+}
+
+/* 页面离开时清掉轮询 */
+window.addEventListener('beforeunload', ()=>{ clearTimeout(state.pollTimer); });
+</script>
+</body>
+</html>
