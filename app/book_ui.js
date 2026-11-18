@@ -68,6 +68,12 @@
     const zh = (match ? match[1] : text).trim(), en = (match ? match[2] : '').trim();
     return { zh: zh || en, en, display: zh && en ? zh + ' · ' + en : (zh || en) };
   }
+  /* Which pages still block a whole-film export (page numbers, in order). */
+  function mediaReadiness(pages) {
+    const rows = Array.isArray(pages) ? pages : [];
+    const missing = rows.filter(item => { const media = item.media || {}, tts = media.tts || {}, clip = media.video || {}; return !['ready', 'silent'].includes(tts.status) || clip.status !== 'ready'; }).map(item => item.page_num);
+    return { total: rows.length, ready: rows.length - missing.length, missing };
+  }
   function median(values) {
     const sorted = (values || []).filter(Number.isFinite).slice().sort((a, b) => a - b);
     if (!sorted.length) return null;
@@ -245,6 +251,10 @@
       $('prevPage').disabled = !current || state.pageIndex === 0; $('nextPage').disabled = !current || state.pageIndex >= state.book.pages.length - 1;
       $('playPause').disabled = !current || (audio.hidden && video.hidden); $('reanalyze').disabled = !hasBook || busy;
       ['generateBook', 'generatePage', 'exportBook'].forEach(id => { $(id).disabled = !current || busy; });
+      // A whole film needs narration and animation on every page; never offer a doomed export.
+      const readiness = mediaReadiness(state.book && state.book.pages);
+      if (readiness.missing.length) $('exportBook').disabled = true;
+      $('exportBook').title = readiness.missing.length ? '还有 ' + readiness.missing.length + ' 页没准备好' : '';
       $('questionInput').disabled = !current; $('sendQuestion').disabled = !current || asking; $('newSession').disabled = !hasBook || asking;
       $('recordQuestion').disabled = !current || asking || state.caps.asr !== true || !window.MediaRecorder || !navigator.mediaDevices;
       $('audioUpload').disabled = !current || asking || state.caps.asr !== true; $('imageUpload').disabled = !current || asking;
@@ -319,7 +329,9 @@
       $('mediaState').textContent = source === 'film' ? '整本影片 · 翻页自动跟随，点画面认物' : film ? '整本影片已合成，可切到“整本影片”连着看' : videoURL ? '原图和本页动画已准备好' : '原图阅读 · 动画尚未准备好';
       $('pageText').textContent = current.text || (current.text_status === 'empty' ? '已确认本页无文字。' : '尚未读取到可靠文字。');
       $('pageNumber').textContent = current.page_num + ' / ' + state.book.pages.length;
-      $('generationHint').textContent = tts.status === 'silent' ? '这一页已确认无字，影片中会保留安静的停留。' : !audioURL ? '这一页尚无朗读；可以先读原图，或准备朗读与动画。' : '本页朗读已就绪，其他页仍可在后台准备。';
+      const readiness = mediaReadiness(state.book.pages), pageHint = tts.status === 'silent' ? '这一页已确认无字，影片中会保留安静的停留。' : !audioURL ? '这一页尚无朗读；可以先读原图，或准备朗读与动画。' : '本页朗读已就绪。';
+      const listed = readiness.missing.slice(0, 6).join('、') + (readiness.missing.length > 6 ? '…' : '');
+      $('generationHint').textContent = pageHint + ' 整本已准备 ' + readiness.ready + ' / ' + readiness.total + ' 页' + (readiness.missing.length ? '，还差第 ' + listed + ' 页：先点“准备整本”，全部完成后才能合成完整影片。' : '，可以合成完整影片了。');
       renderExports(); updateControls();
     }
     function changePage(index) {
@@ -761,5 +773,5 @@
     })();
   }
   return { containRect, mapClickToSource, boxToDisplay, hitDetection, sameContext, responseMatches, shouldResume, formatTime,
-    pageAtTime, sentenceAt, momentTarget, frameKey, splitLabel, median, start };
+    pageAtTime, sentenceAt, momentTarget, frameKey, splitLabel, mediaReadiness, median, start };
 });

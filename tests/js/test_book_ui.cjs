@@ -97,3 +97,11 @@ test('bilingual labels display both names and median is robust', () => {
   assert.equal(median([4, 1, 3, 2]), 2.5);
   assert.equal(median([]), null);
 });
+
+test('export readiness lists every page still missing narration or animation', () => {
+  const { mediaReadiness } = require('../../app/book_ui.js');
+  const page = (num, tts, video) => ({ page_num: num, media: { tts: { status: tts }, video: { status: video } } });
+  assert.deepEqual(mediaReadiness([page(1, 'not_requested', 'not_requested'), page(2, 'ready', 'ready'), page(3, 'silent', 'ready'), page(4, 'ready', 'failed')]),
+    { total: 4, ready: 2, missing: [1, 4] });
+  assert.deepEqual(mediaReadiness(undefined), { total: 0, ready: 0, missing: [] });
+});
