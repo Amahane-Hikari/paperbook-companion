@@ -3828,63 +3828,12 @@
         function setupVideoPlayback(videoElement, index, audioPath) {
             const audioElement = document.getElementById('audioElement');
             
-            // 添加视频点击事件（用于视频帧分析）
             videoElement.style.cursor = 'pointer';
-            videoElement.addEventListener('click', async function(event) {
-                console.log('🎬 视频被点击了！isFullscreenMode=' + isFullscreenMode);
-                
-                // 只在全屏模式下处理
-                if (!isFullscreenMode) {
-                    console.log('❌ 非全屏模式，忽略视频点击');
-                    return;
-                }
-                
-                // 如果正在分析中，忽略点击
-                if (isAnalyzing) {
-                    console.log('❌ 正在分析中，忽略点击');
-                    return;
-                }
-                
-                // 立即暂停视频
+            videoElement.addEventListener('click', event => {
+                if (!isFullscreenMode) return;
                 event.preventDefault();
                 event.stopPropagation();
-                
-                // 暂停所有媒体
-                videoElement.pause();
-                const audioEl = document.getElementById('audioElement');
-                const musicEl = document.getElementById('musicElement');
-                if (audioEl) audioEl.pause();
-                if (musicEl) musicEl.pause();
-                isPlaying = false;
-                updatePlayButtonsVisibility();
-                console.log('⏸️ 视频已暂停');
-                
-                // 获取点击位置
-                const rect = videoElement.getBoundingClientRect();
-                const clickX = event.clientX - rect.left;
-                const clickY = event.clientY - rect.top;
-                console.log(`🖱️ 点击位置: (${clickX.toFixed(0)}, ${clickY.toFixed(0)})`);
-                
-                // 获取视频当前播放时间
-                const currentTime = videoElement.currentTime;
-                console.log(`⏱️ 视频当前时间: ${currentTime.toFixed(2)}秒`);
-                
-                // 获取当前页面的视频路径
-                const currentData = paragraphData[currentParagraphIndex];
-                if (!currentData || !currentData.videoPath) {
-                    console.log('❌ 当前页面没有视频路径，尝试使用图片');
-                    if (currentData && currentData.imagePath) {
-                        await analyzeAndHighlight(clickX, clickY, rect.width, rect.height, currentData.imagePath, videoElement);
-                    }
-                    return;
-                }
-                
-                // 构建完整的视频路径
-                const fullVideoPath = currentSessionDir ? `${currentSessionDir}/${currentData.videoPath}` : `${currentData.videoPath}`;
-                console.log(`🎬 分析视频帧: ${fullVideoPath}, 时间: ${currentTime}秒`);
-                
-                // 调用视频帧分析函数
-                await analyzeVideoFrame(clickX, clickY, rect.width, rect.height, fullVideoPath, currentTime, videoElement);
+                handleVideoPointRead(videoElement, event.clientX, event.clientY);
             });
             
             // 等待视频和音频都加载完成
@@ -4997,12 +4946,9 @@
         // 进入全屏模式
         // ========== 图片点击分析功能 ==========
         let isAnalyzing = false;  // 是否正在分析中
-        let cachedAnalysisResult = null;  // 缓存的分析结果
-        let cachedAnalysisIndex = -1;  // 缓存的分析对应的页面索引
-        let cachedFramePath = null;  // 缓存的截取帧路径
-        let cachedVideoPath = null;  // 缓存的视频路径
-        let cachedFrameSize = null;  // 缓存的帧尺寸
-        let cachedVideoTime = -1;  // 缓存的视频时间点（秒，取整）
+        let imageAnalysisCache = null;
+        let videoAnalysisCache = null;
+        let pointReadSequence = 0;
         let objectLabelAudio = null;  // 实体标签TTS的Audio对象
         
         // 初始化图片点击分析
@@ -5052,7 +4998,6 @@
                 
                 // 如果正在分析中，清除高亮并恢复播放
                 if (isAnalyzing) {
-                    isAnalyzing = false;
                     hideAnalyzingOverlay();
                     clearHighlight();
                 }
@@ -5073,7 +5018,7 @@
             console.log(`🖱️ 点击目标: ${target.tagName}, class: ${target.className}`);
             
             // 获取点击位置相对于图片的坐标
-            const imageItem = document.querySelector('.image-item');
+            const imageItem = target.closest('.image-item');
             if (!imageItem) return;
             
             // 查找图片或视频元素
@@ -5081,7 +5026,13 @@
             const img = mediaWrapper ? mediaWrapper.querySelector('img') : imageItem.querySelector('img');
             const video = mediaWrapper ? mediaWrapper.querySelector('video') : imageItem.querySelector('video');
             
-            const targetElement = video || img;
+            if (video && video.videoWidth && video.getBoundingClientRect().width > 0) {
+                event.preventDefault();
+                event.stopPropagation();
+                await handleVideoPointRead(video, event.clientX, event.clientY);
+                return;
+            }
+            const targetElement = img;
             if (!targetElement) {
                 console.log('❌ 找不到视频或图片元素');
                 return;
@@ -5125,10 +5076,9 @@
         }
         
         // 暂停播放
-        function pausePlayback() {
+        function pausePlayback(video = document.querySelector('.story-video')) {
             const audioElement = document.getElementById('audioElement');
             const musicElement = document.getElementById('musicElement');
-            const video = document.querySelector('.story-video');
             
             console.log('⏸️ 尝试暂停播放...');
             console.log(`   TTS: ${audioElement ? (audioElement.paused ? '已暂停' : '正在播放') : '未找到'}`);
@@ -5154,7 +5104,9 @@
         }
         
         // 恢复播放
-        function resumePlayback() {
+        function resumePlayback(tracks = null) {
+            pointReadSequence++;
+            if (videoAnalysisCache) videoAnalysisCache.resumePending = false;
             console.log('========== 开始恢复播放 ==========');
             
             // 如果小助手正在打开，不允许恢复播放
@@ -5176,14 +5128,14 @@
             
             const audioElement = document.getElementById('audioElement');
             const musicElement = document.getElementById('musicElement');
-            const video = document.querySelector('.story-video');
+            const video = tracks ? tracks.videoElement : document.querySelector('.story-video');
             
             console.log('🔄 尝试恢复播放...');
             console.log(`   TTS元素: ${!!audioElement}, paused: ${audioElement?.paused}, src存在: ${!!audioElement?.src}`);
             console.log(`   音乐元素: ${!!musicElement}, paused: ${musicElement?.paused}, src存在: ${!!musicElement?.src}`);
             console.log(`   视频元素: ${!!video}, paused: ${video?.paused}, src存在: ${!!video?.src}`);
             
-            if (audioElement) {
+            if (audioElement && (!tracks || tracks.voice)) {
                 console.log(`   TTS详细: paused=${audioElement.paused}, src=${audioElement.src}`);
                 if (audioElement.paused && audioElement.src) {
                     console.log('   → 尝试恢复TTS...');
@@ -5193,7 +5145,7 @@
                 }
             }
             
-            if (musicElement) {
+            if (musicElement && (!tracks || tracks.music)) {
                 console.log(`   音乐详细: paused=${musicElement.paused}, src=${musicElement.src}`);
                 if (musicElement.paused && musicElement.src) {
                     console.log('   → 尝试恢复音乐...');
@@ -5203,7 +5155,7 @@
                 }
             }
             
-            if (video) {
+            if (video && (!tracks || tracks.video)) {
                 console.log(`   视频详细: paused=${video.paused}, src=${video.src || video.currentSrc}`);
                 console.log(`   视频readyState=${video.readyState}, networkState=${video.networkState}`);
                 if (video.paused) {
@@ -5238,338 +5190,137 @@
             console.log('🧹 已清除所有高亮');
         }
         
-        // 分析视频帧并高亮
-        async function analyzeVideoFrame(clickX, clickY, displayWidth, displayHeight, videoPath, timeSeconds, targetElement) {
-            isAnalyzing = true;
-            
-            // 显示分析中提示
-            showAnalyzingOverlay(targetElement);
-            
+        function videoContentRect(video) {
+            const rect = video.getBoundingClientRect();
+            if (!video.videoWidth || !video.videoHeight || !rect.width || !rect.height) return null;
+            const scale = Math.min(rect.width / video.videoWidth, rect.height / video.videoHeight);
+            const width = video.videoWidth * scale;
+            const height = video.videoHeight * scale;
+            const x = (rect.width - width) / 2;
+            const y = (rect.height - height) / 2;
+            return {left: rect.left + x, top: rect.top + y, width, height, x, y};
+        }
+
+        function captureCurrentVideoFrame(video) {
             try {
-                let analysisResult;
-                let framePath;
-                
-                // 检查是否有缓存（同一页面、同一视频不需要重复截取）
-                let frameSize = null;
-                
-                // 视频时间取整到 0.1 秒精度，用于缓存判断（更精确）
-                const roundedTime = Math.round(timeSeconds * 10) / 10;
-                
-                // 检查缓存是否有效（页面、视频路径、时间点都要匹配）
-                const cacheKey = `${currentParagraphIndex}_${videoPath}_${roundedTime}`;
-                const lastCacheKey = `${cachedAnalysisIndex}_${cachedVideoPath}_${cachedVideoTime}`;
-                
-                if (cacheKey === lastCacheKey && cachedAnalysisResult) {
-                    console.log(`📦 使用缓存的视频帧分析结果（页面 ${currentParagraphIndex + 1}, 时间 ${roundedTime}s）`);
-                    analysisResult = cachedAnalysisResult;
-                    framePath = cachedFramePath;
-                    frameSize = cachedFrameSize;
-                } else {
-                    console.log(`🔄 缓存不匹配，重新分析`);
-                    console.log(`   当前: ${cacheKey}`);
-                    console.log(`   缓存: ${lastCacheKey}`);
-                    console.log(`🎬 调用视频帧分析 API: ${videoPath}, 时间点: ${timeSeconds.toFixed(2)}s`);
-                    
-                    // 调用后端 API 截取视频帧并分析
-                    // 设置超时控制器
-                    const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 120000); // 120秒超时
-                    
-                    try {
-                        const response = await fetch('/tts-story-book/api/analyze-video-frame', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ 
-                                video_path: videoPath,
-                                time_seconds: timeSeconds  // 使用实际的视频播放时间
-                            }),
-                            signal: controller.signal
-                        });
-                        clearTimeout(timeoutId);
-                        
-                        var result = await response.json();
-                    } catch (fetchError) {
-                        clearTimeout(timeoutId);
-                        if (fetchError.name === 'AbortError') {
-                            throw new Error('分析请求超时（120秒），请稍后重试');
-                        }
-                        throw fetchError;
-                    }
-                    
-                    if (!result.success) {
-                        throw new Error(result.error || '视频帧分析失败');
-                    }
-                    
-                    analysisResult = result.objects;
-                    framePath = result.frame_path;
-                    
-                    // 缓存结果（包含帧尺寸和时间点）
-                    cachedAnalysisResult = analysisResult;
-                    cachedAnalysisIndex = currentParagraphIndex;
-                    cachedFramePath = framePath;
-                    cachedVideoPath = videoPath;
-                    cachedFrameSize = result.frame_size;
-                    cachedVideoTime = roundedTime;
-                    frameSize = result.frame_size;
-                }
-                
-                console.log(`✅ 视频帧分析完成:`, analysisResult);
-                console.log(`📸 截取的帧路径: ${framePath}`);
-                
-                // 隐藏分析中提示
-                hideAnalyzingOverlay();
-                
-                // 解析数据格式
-                let detections = [];
-                
-                // 优先使用服务端返回的帧尺寸（这是截取帧的实际尺寸，和视频尺寸一致）
-                let originalWidth = frameSize?.width || targetElement.videoWidth || displayWidth;
-                let originalHeight = frameSize?.height || targetElement.videoHeight || displayHeight;
-                
-                // 检查是否是新格式 {detections: []}
-                if (analysisResult.detections && Array.isArray(analysisResult.detections)) {
-                    detections = analysisResult.detections;
-                    console.log(`📐 新格式 - 检测到 ${detections.length} 个主体`);
-                } else {
-                    // 旧格式 {label: [x1, y1, x2, y2], ...}
-                    for (const [label, box] of Object.entries(analysisResult)) {
-                        if (label.includes('图像尺寸') || label.includes('Image Size') || label === 'image_size') continue;
-                        if (Array.isArray(box) && box.length === 4) {
-                            detections.push({ label, box });
-                        }
-                    }
-                    console.log(`📐 旧格式 - 检测到 ${detections.length} 个主体`);
-                }
-                
-                console.log(`📐 帧尺寸(边界框基准): ${originalWidth}x${originalHeight}`);
-                console.log(`📐 视频容器尺寸: ${displayWidth.toFixed(0)}x${displayHeight.toFixed(0)}`);
-                console.log(`📐 视频原始尺寸: ${targetElement.videoWidth}x${targetElement.videoHeight}`);
-                console.log(`📐 点击位置(容器内): (${clickX.toFixed(0)}, ${clickY.toFixed(0)})`);
-                
-                // 缓存结果
-                cachedAnalysisResult = analysisResult;
-                cachedAnalysisIndex = currentParagraphIndex;
-                
-                // 计算 object-fit: contain 下的实际显示区域
-                // 视频会保持宽高比缩放并居中显示
-                const videoRatio = originalWidth / originalHeight;
-                const containerRatio = displayWidth / displayHeight;
-                
-                let actualDisplayWidth, actualDisplayHeight, offsetX, offsetY;
-                
-                if (videoRatio > containerRatio) {
-                    // 视频更宽，以容器宽度为准，高度按比例缩放
-                    actualDisplayWidth = displayWidth;
-                    actualDisplayHeight = displayWidth / videoRatio;
-                    offsetX = 0;
-                    offsetY = (displayHeight - actualDisplayHeight) / 2;
-                } else {
-                    // 视频更高，以容器高度为准，宽度按比例缩放
-                    actualDisplayHeight = displayHeight;
-                    actualDisplayWidth = displayHeight * videoRatio;
-                    offsetX = (displayWidth - actualDisplayWidth) / 2;
-                    offsetY = 0;
-                }
-                
-                console.log(`📐 实际显示区域: ${actualDisplayWidth.toFixed(0)}x${actualDisplayHeight.toFixed(0)}`);
-                console.log(`📐 显示偏移: offsetX=${offsetX.toFixed(2)}, offsetY=${offsetY.toFixed(2)}`);
-                
-                // 检查点击是否在实际显示区域内
-                if (clickX < offsetX || clickX > offsetX + actualDisplayWidth ||
-                    clickY < offsetY || clickY > offsetY + actualDisplayHeight) {
-                    console.log(`⚠️ 点击位置在实际显示区域外，可能点击了空白区域`);
-                }
-                
-                // 计算缩放比例（使用实际显示尺寸）
-                const scaleX = originalWidth / actualDisplayWidth;
-                const scaleY = originalHeight / actualDisplayHeight;
-                
-                // 将点击位置转换为原始坐标（需要减去偏移）
-                const adjustedClickX = clickX - offsetX;
-                const adjustedClickY = clickY - offsetY;
-                
-                // 直接转换，不裁剪（让匹配逻辑处理边界情况）
-                const originalClickX = adjustedClickX * scaleX;
-                const originalClickY = adjustedClickY * scaleY;
-                
-                console.log(`📐 缩放比例: scaleX=${scaleX.toFixed(4)}, scaleY=${scaleY.toFixed(4)}`);
-                console.log(`📐 点击位置(容器内): (${clickX.toFixed(2)}, ${clickY.toFixed(2)})`);
-                console.log(`📐 调整后点击位置(显示区域): (${adjustedClickX.toFixed(2)}, ${adjustedClickY.toFixed(2)})`);
-                console.log(`📐 点击原始坐标: (${originalClickX.toFixed(2)}, ${originalClickY.toFixed(2)})`);
-                
-                // 检查是否在有效范围内
-                if (adjustedClickX < 0 || adjustedClickX > actualDisplayWidth ||
-                    adjustedClickY < 0 || adjustedClickY > actualDisplayHeight) {
-                    console.log(`⚠️ 点击位置在实际显示区域外`);
-                    console.log(`   显示区域: 0-${actualDisplayWidth.toFixed(2)} x 0-${actualDisplayHeight.toFixed(2)}`);
-                };
-                
-                // 查找点击位置对应的主体
-                let foundLabel = null;
-                let foundBox = null;
-                let minDistance = Infinity;
-                let nearestLabel = null;
-                let nearestBox = null;
-                
-                // 先转换所有边界框的坐标格式
-                const normalizedDetections = detections.map(detection => {
-                    const label = detection.label;
-                    let box = detection.box;
-                    
-                    if (!Array.isArray(box) || box.length !== 4) return null;
-                    
-                    let [x1, y1, x2, y2] = box;
-                    
-                    // The server contract is absolute pixels in the returned frame.
-                    // Numeric ranges never identify a coordinate space.
-                    
-                    return { label, box: [x1, y1, x2, y2] };
-                }).filter(d => d !== null);
-                
-                console.log(`🔍 开始匹配，点击原始坐标: (${originalClickX.toFixed(2)}, ${originalClickY.toFixed(2)})`);
-                console.log(`   共 ${normalizedDetections.length} 个主体需要检查`);
-                console.log(`📋 所有检测到的主体列表:`);
-                normalizedDetections.forEach((d, idx) => {
-                    const [x1, y1, x2, y2] = d.box;
-                    console.log(`   ${idx + 1}. ${d.label}: [${x1}, ${y1}, ${x2}, ${y2}]`);
-                });
-                
-                // 在页面上标记点击位置（调试用）
-                const rect = targetElement.getBoundingClientRect();
-                const clickMarker = document.createElement('div');
-                clickMarker.id = 'clickMarker';
-                clickMarker.style.cssText = `
-                    position: fixed;
-                    left: ${clickX + rect.left}px;
-                    top: ${clickY + rect.top}px;
-                    width: 10px;
-                    height: 10px;
-                    background: #00FF00;
-                    border: 2px solid #000000;
-                    border-radius: 50%;
-                    z-index: 100001;
-                    pointer-events: none;
-                    transform: translate(-50%, -50%);
-                `;
-                document.body.appendChild(clickMarker);
-                setTimeout(() => clickMarker.remove(), 5000);
-                
-                for (const detection of normalizedDetections) {
-                    const label = detection.label;
-                    const [x1, y1, x2, y2] = detection.box;
-                    
-                    // 计算边界框的中心和面积
-                    const centerX = (x1 + x2) / 2;
-                    const centerY = (y1 + y2) / 2;
-                    const boxWidth = x2 - x1;
-                    const boxHeight = y2 - y1;
-                    const boxArea = boxWidth * boxHeight;
-                    
-                    // 检查点击位置是否在边界框内
-                    const isInside = originalClickX >= x1 && originalClickX <= x2 && 
-                                    originalClickY >= y1 && originalClickY <= y2;
-                    
-                    // 计算到边界框中心的距离
-                    const distance = Math.sqrt(Math.pow(originalClickX - centerX, 2) + Math.pow(originalClickY - centerY, 2));
-                    
-                    // 计算到边界框边缘的最短距离（如果在框外）
-                    let edgeDistance = distance;
-                    if (!isInside) {
-                        // 计算到矩形边缘的最短距离
-                        let dx = 0;
-                        let dy = 0;
-                        
-                        if (originalClickX < x1) {
-                            dx = x1 - originalClickX;
-                        } else if (originalClickX > x2) {
-                            dx = originalClickX - x2;
-                        }
-                        
-                        if (originalClickY < y1) {
-                            dy = y1 - originalClickY;
-                        } else if (originalClickY > y2) {
-                            dy = originalClickY - y2;
-                        }
-                        
-                        edgeDistance = Math.sqrt(dx * dx + dy * dy);
-                    }
-                    
-                    console.log(`   检查: ${label}`);
-                    console.log(`      边界框: [${x1}, ${y1}, ${x2}, ${y2}] (${boxWidth.toFixed(0)}x${boxHeight.toFixed(0)}, 面积: ${boxArea.toFixed(0)})`);
-                    console.log(`      中心: (${centerX.toFixed(2)}, ${centerY.toFixed(2)})`);
-                    console.log(`      点击在框内: ${isInside ? '✅' : '❌'}`);
-                    console.log(`      到中心距离: ${distance.toFixed(2)}px`);
-                    console.log(`      到边缘距离: ${edgeDistance.toFixed(2)}px`);
-                    
-                    // 优先匹配：点击在框内的主体
-                    if (isInside) {
-                        // 如果多个主体都包含点击位置，选择面积最小的（最精确的）
-                        const currentFoundArea = foundBox ? (foundBox[2] - foundBox[0]) * (foundBox[3] - foundBox[1]) : Infinity;
-                        if (!foundLabel || boxArea < currentFoundArea) {
-                            foundLabel = label;
-                            foundBox = detection.box;
-                            console.log(`      ✅ 精确匹配! (面积: ${boxArea.toFixed(0)})`);
-                        }
-                    }
-                    
-                    // 如果没有精确匹配，记录最近的主体（使用边缘距离）
-                    if (!isInside && edgeDistance < minDistance) {
-                        minDistance = edgeDistance;
-                        nearestLabel = label;
-                        nearestBox = detection.box;
-                    }
-                }
-                
-                // 如果没有精确匹配，使用最近的主体
-                if (!foundLabel && nearestLabel) {
-                    foundLabel = nearestLabel;
-                    foundBox = nearestBox;
-                    console.log(`⚠️ 使用最近的主体: ${nearestLabel}, 距离: ${minDistance.toFixed(0)}px`);
-                }
-                
-                // 调试：显示所有检测到的主体边界框（帮助检查位置）
-                console.log('🔲 显示所有检测到的主体边界框（调试模式）');
-                showAllBoundingBoxes(analysisResult, targetElement, scaleX, scaleY, offsetX, offsetY);
-                
-                if (foundLabel && foundBox) {
-                    console.log(`✅ 最终匹配: ${foundLabel}, 边界框: [${foundBox.join(', ')}]`);
-                    
-                    // 显示高亮框（传入偏移量）
-                    highlightObject(foundLabel, foundBox, targetElement, scaleX, scaleY, offsetX, offsetY);
-                    
-                    // TTS 播报
-                    // foundLabel 格式如: 小猫<This is a ginger kitten>
-                    let chineseLabel = foundLabel.split('<')[0].trim();
-                    let englishLabel = '';
-                    const labelMatch = foundLabel.match(/<([^>]+)>/);
-                    if (labelMatch) {
-                        englishLabel = labelMatch[1].trim();
-                    }
-                    console.log(`转写标签: 中文="${chineseLabel}", 英文="${englishLabel}"`);
-                    if (chineseLabel) {
-                        await speakObjectLabel(chineseLabel+englishLabel);
-                    }
-                    // if (englishLabel) {
-                    //     // 用英语单独播报，不加 "这是"
-                    //     await speakObjectLabel(englishLabel);
-                    // }
-                } else {
-                    console.log('❌ 没有找到主体');
-                    alert('未检测到点击位置的主体');
-                }
-                
+                const canvas = document.createElement('canvas');
+                const scale = Math.min(1, 3840 / video.videoWidth, 2160 / video.videoHeight);
+                canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+                canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+                canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+                return canvas.toDataURL('image/jpeg', 0.9);
             } catch (error) {
-                console.error('❌ 视频帧分析失败:', error);
-                console.error('   错误详情:', error.message);
-                console.error('   错误堆栈:', error.stack);
-                hideAnalyzingOverlay();
-                alert(`分析失败: ${error.message}`);
-                alert('视频帧分析失败: ' + error.message);
-            } finally {
-                isAnalyzing = false;
+                console.warn('浏览器抓帧失败，改用服务端截帧', error);
+                return '';
             }
         }
-        
+
+        function waitForObjectLabel(audio) {
+            if (!audio || audio.paused || audio.ended) return Promise.resolve();
+            return new Promise(resolve => {
+                const events = ['ended', 'error', 'pause'];
+                const finish = () => {
+                    clearTimeout(timer);
+                    events.forEach(event => audio.removeEventListener(event, finish));
+                    resolve();
+                };
+                const timer = setTimeout(finish, 15000);
+                events.forEach(event => audio.addEventListener(event, finish));
+            });
+        }
+
+        function closestFrameObject(objects, x, y) {
+            let selected = null;
+            let bestDistance = Infinity;
+            let bestArea = Infinity;
+            for (const [label, box] of Object.entries(objects)) {
+                if (!Array.isArray(box) || box.length !== 4 || !box.every(Number.isFinite)) continue;
+                const [x1, y1, x2, y2] = box;
+                if (x1 >= x2 || y1 >= y2) continue;
+                const distance = Math.hypot(Math.max(x1 - x, 0, x - x2), Math.max(y1 - y, 0, y - y2));
+                const area = (x2 - x1) * (y2 - y1);
+                if (distance < bestDistance || (distance === bestDistance && area < bestArea)) {
+                    selected = {label, box};
+                    bestDistance = distance;
+                    bestArea = area;
+                }
+            }
+            return selected;
+        }
+
+        async function handleVideoPointRead(video, clientX, clientY) {
+            if (!isFullscreenMode || isAnalyzing || assistantOpen) return;
+            const content = videoContentRect(video);
+            if (!content) return;
+            const x = (clientX - content.left) / content.width;
+            const y = (clientY - content.top) / content.height;
+            if (x < 0 || x > 1 || y < 0 || y > 1) return;
+
+            const index = currentParagraphIndex;
+            const session = currentSessionDir;
+            const relativePath = paragraphData[index]?.videoPath;
+            if (!relativePath) return;
+            const path = session ? `${session}/${relativePath}` : relativePath;
+            const cachedFrame = videoAnalysisCache?.video === video && videoAnalysisCache.time === video.currentTime
+                ? videoAnalysisCache : null;
+            const tracks = cachedFrame?.resumePending || {
+                videoElement: video,
+                video: !video.paused,
+                voice: document.getElementById('audioElement')?.paused === false,
+                music: document.getElementById('musicElement')?.paused === false
+            };
+            const shouldResume = tracks.video || tracks.voice || tracks.music;
+            const sequence = ++pointReadSequence;
+            pausePlayback(video);
+            const frameTime = video.currentTime;
+            const isCurrent = () => sequence === pointReadSequence && isFullscreenMode && !assistantOpen &&
+                video.isConnected && session === currentSessionDir && index === currentParagraphIndex &&
+                frameTime === video.currentTime;
+            isAnalyzing = true;
+            clearHighlight();
+            showAnalyzingOverlay(video);
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 120000);
+            try {
+                let result = cachedFrame?.result;
+                if (!result) {
+                    const response = await fetch('/tts-story-book/api/analyze-video-frame', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({video_path: path, time_seconds: frameTime,
+                            frame_base64: captureCurrentVideoFrame(video)}),
+                        signal: controller.signal
+                    });
+                    result = await response.json();
+                    if (!response.ok || !result.success) throw new Error(result.error || '视频帧分析失败');
+                }
+                if (!isCurrent()) return;
+                videoAnalysisCache = {video, time: frameTime, result, resumePending: shouldResume ? tracks : null};
+                const {width, height} = result.frame_size;
+                const item = closestFrameObject(result.objects, x * width, y * height);
+                if (item) {
+                    const currentRect = videoContentRect(video);
+                    if (!currentRect) return;
+                    highlightObject(item.label, item.box, video, width / currentRect.width,
+                        height / currentRect.height, currentRect.x, currentRect.y);
+                    hideAnalyzingOverlay();
+                    await speakObjectLabel(item.label.replace(/<([^>]+)>/, '$1').trim(), isCurrent);
+                } else {
+                    alert('未检测到点击位置的主体');
+                }
+            } catch (error) {
+                if (isCurrent()) alert(error.name === 'AbortError' ? '视频帧分析超时' : error.message);
+            } finally {
+                clearTimeout(timeout);
+                hideAnalyzingOverlay();
+                isAnalyzing = false;
+                if (shouldResume && isCurrent()) {
+                    await waitForObjectLabel(objectLabelAudio);
+                    if (isCurrent()) resumePlayback(tracks);
+                }
+            }
+        }
+
         // 分析图片并高亮
         async function analyzeAndHighlight(clickX, clickY, displayWidth, displayHeight, imagePath, targetElement) {
             isAnalyzing = true;
@@ -5581,9 +5332,9 @@
                 let analysisResult;
                 
                 // 检查是否有缓存的分析结果
-                if (cachedAnalysisIndex === currentParagraphIndex && cachedAnalysisResult) {
+                if (imageAnalysisCache?.path === imagePath && imageAnalysisCache.element === targetElement) {
                     console.log('📦 使用缓存的分析结果');
-                    analysisResult = cachedAnalysisResult;
+                    analysisResult = imageAnalysisCache.result;
                 } else {
                     // 调用 API 分析图片
                     console.log(`🔍 开始分析图片: ${imagePath}`);
@@ -5617,8 +5368,7 @@
                     analysisResult = result.objects;
                     
                     // 缓存结果
-                    cachedAnalysisResult = analysisResult;
-                    cachedAnalysisIndex = currentParagraphIndex;
+                    imageAnalysisCache = {path: imagePath, element: targetElement, result: analysisResult};
                     
                     console.log('✅ 图片分析完成:', analysisResult);
                 }
@@ -5807,7 +5557,7 @@
                 console.log('🔲 显示所有主体边界框（调试）');
                 showAllBoundingBoxes(analysisResult, targetElement, scaleX, scaleY, offsetX, offsetY);
                 
-                if (foundObject) {
+                if (foundLabel && foundBox) {
                     console.log(`✅ 最终匹配主体: ${foundLabel}, 边界框: [${foundBox.join(', ')}]`);
                     
                     // 显示高亮框和标签（传入偏移量）
@@ -6100,7 +5850,7 @@
         }
         
         // TTS 播报物体标签
-        async function speakObjectLabel(label) {
+        async function speakObjectLabel(label, isCurrent = () => true) {
             try {
                 console.log(`🔊 开始播报: "${label}"`);
                 
@@ -6125,6 +5875,7 @@
                 const result = await response.json();
                 console.log(`🔊 TTS API 响应:`, result);
                 
+                if (!isCurrent()) return;
                 if (result.success && result.audio_path) {
                     console.log(`🔊 播放音频: ${result.audio_path}`);
                     
@@ -6215,6 +5966,7 @@
         
         // 退出全屏模式
         function exitFullscreenMode() {
+            pointReadSequence++;
             if (!isFullscreenMode) return;
             
             isFullscreenMode = false;
@@ -7122,6 +6874,8 @@
         }
         
         function openAssistant() {
+            pointReadSequence++;
+            if (videoAnalysisCache) videoAnalysisCache.resumePending = null;
             assistantOpen = true;
             
             console.log('🤖 打开小助手，暂停绘本播放');

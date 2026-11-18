@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 (async () => {
   const app = path.resolve(__dirname, '../../app');
   let scripts = 0;
-  for (const file of ['tts_v2.html', 'voice_register.html']) {
+  for (const file of ['tts_v2.html', 'voice_register.html', 'quick.html']) {
     const html = fs.readFileSync(path.join(app, file), 'utf8');
     for (const match of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)) {
       if (match[1].trim()) { new vm.Script(match[1], { filename: file }); scripts++; }
