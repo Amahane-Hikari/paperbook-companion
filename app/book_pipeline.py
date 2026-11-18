@@ -355,7 +355,7 @@ class BookPipelineService:
                 self._update_job(job_id, status='succeeded', result=result, finished_at=_now())
             except Exception as exc:
                 # Unexpected adapters must not leak absolute paths/provider secrets.
-                error = str(exc) if isinstance(exc, (PipelineError, MediaError)) else f'任务执行失败（{type(exc).__name__}），请检查配置和受控服务'
+                error = str(exc) if isinstance(exc, (PipelineError, MediaError)) else f'任务执行失败（{type(exc).__name__}），请检查接口配置或稍后重试'
                 self._update_job(job_id, status='failed', error=error, finished_at=_now())
                 manifest = self.manifest(book_id)
                 manifest['last_error'] = {'kind': kind, 'message': error, 'job_id': job_id}
