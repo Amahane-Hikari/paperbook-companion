@@ -150,7 +150,7 @@ def export_book(book_dir, manifest, options=None, force=False):
     prepared, identities = [], []
     for page in pages:
         tts, video = page.get('media', {}).get('tts', {}), page.get('media', {}).get('video', {})
-        if page.get('text', '').strip() and tts.get('status') == 'silent':
+        if page.get('text', '').strip() and tts.get('status') == 'silent' and tts.get('silent_reason') != 'no_narration_text':
             raise MediaError('有文字页不能以静音冒充配音')
         audio = _inside(root, tts.get('path'))
         clip = _inside(root, video.get('path'))

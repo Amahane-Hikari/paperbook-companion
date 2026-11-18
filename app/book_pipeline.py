@@ -73,8 +73,53 @@ def _identifier(value, kind='标识'):
     return value
 
 
+_CLOSERS = '”’"\'』」）)》】'
+_SPEAKABLE = re.compile(r'[0-9A-Za-z㐀-鿿]')
+
+
 def _sentences(text):
-    return [s.strip() for s in re.split(r'(?<=[。！？!?])\s*|(?<=\.)\s+|\n+', text) if s.strip()]
+    """Split into speakable sentences. Closing quotes/brackets stay with their sentence,
+    and punctuation-only fragments (e.g. a lone ”) are merged back instead of being sent
+    to TTS, which returns no audio for them."""
+    parts = re.split(r'(?<=[。！？!?…])(?![' + re.escape(_CLOSERS) + r'。！？!?…])\s*'
+                     r'|(?<=[。！？!?…][' + re.escape(_CLOSERS) + r'])\s*'
+                     r'|(?<=\.)\s+|\n+', text)
+    result = []
+    for part in (p.strip() for p in parts):
+        if not part:
+            continue
+        if not _SPEAKABLE.search(part):
+            if result:
+                result[-1] += part
+            continue
+        result.append(part)
+    return result
+
+
+# Layout furniture of the sample series (character-origin sidebar, reading-guide box) and
+# competition watermarks. Page text keeps them for QA/search; narration skips them.
+_SIDEBAR_LABELS = {'汉字源流', '甲骨文', '金文', '小篆', '隶书', '楷书'}
+_WATERMARK = re.compile(r'请勿外传|仅供.{0,40}(?:比赛|大赛)|创新大赛|纸书智伴')
+
+
+def _narration_text(text):
+    lines, skip_guide = [], False
+    for raw in (text or '').splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if _WATERMARK.search(line) or line in _SIDEBAR_LABELS:
+            continue
+        if re.fullmatch(r'[㐀-鿿]', line):
+            continue  # the single character shown in the character-origin sidebar
+        if line == '阅读指导':
+            skip_guide = True
+            continue
+        if skip_guide:
+            skip_guide = False
+            continue  # the one guide question is addressed to the grown-up, not narrated
+        lines.append(line)
+    return '\n'.join(lines).strip()
 
 
 def _tokens(text):
@@ -281,7 +326,11 @@ class BookPipelineService:
             job = self.job(job_id)
             if job['status'] not in ('failed', 'interrupted'):
                 raise PipelineError('仅失败或中断的任务可重试', 409)
-            self._update_job(job_id, status='queued', error=None, result=None, finished_at=None)
+            changes = {}
+            if job.get('kind') == 'media' and job.get('request', {}).get('force'):
+                # A retry finishes what is missing; pages already regenerated stay cached (no repeat paid calls).
+                changes['request'] = {**job['request'], 'force': False}
+            self._update_job(job_id, status='queued', error=None, result=None, finished_at=None, **changes)
             self._futures[job_id] = self.executor.submit(self._run_job, job_id)
         return job_id
 
@@ -394,7 +443,7 @@ class BookPipelineService:
         # Tool paths belong to trusted server config, never user JSON.
         if any(k in options for k in ('ffmpeg', 'ffprobe')):
             raise PipelineError('视频请求不能指定可执行文件')
-        force, completed = bool(payload.get('force', False)), []
+        force, completed, failures = bool(payload.get('force', False)), [], []
         caps = self.adapters.get('capabilities', lambda: {})()
         for page in manifest['pages']:
             if page['page_id'] not in selected:
@@ -405,11 +454,13 @@ class BookPipelineService:
                     raise PipelineError('此页文字尚未可靠读取，请先重新分析，不能以静音代替')
                 image = self.asset(book_id, page['image_path'])
                 text = page.get('text', '').strip()
-                base_key = {'version': 1, 'text': text, 'image_sha256': hashlib.sha256(image.read_bytes()).hexdigest(),
+                # Narration skips layout furniture/watermarks; the page text itself is unchanged.
+                narration = _narration_text(text)
+                base_key = {'version': 1, 'text': narration, 'image_sha256': hashlib.sha256(image.read_bytes()).hexdigest(),
                             'voice': voice, 'language': manifest.get('language', 'zh'), 'options': options,
                             'models': {**self.config.get('cache_identity', {}),
                                        'reader_vl_model': self.config.get('reader_options', {}).get('vl_model'),
-                                       'capabilities': caps}, 'prompt_version': 'book-page-v1'}
+                                       'capabilities': caps}, 'prompt_version': 'book-page-v2'}
                 tts_key = _hash({**base_key, 'stage': 'tts'})
                 target_rel = f"media/{page['page_id']}/{tts_key[:24]}"  # short dir: Windows MAX_PATH; full key stays in the manifest
                 media_dir = self.book_dir(book_id) / target_rel
@@ -428,11 +479,11 @@ class BookPipelineService:
                     page['media']['tts'] = {'status': 'running', 'cache_key': tts_key}
                     self._save_manifest(book_id, manifest)
                     sentences, files, elapsed = [], [], 0.0
-                    if text:
+                    if narration:
                         synthesize = self.adapters.get('synthesize')
                         if synthesize is None:
                             raise PipelineError('未配置配音适配器', 503)
-                        for index, sentence in enumerate(_sentences(text)):
+                        for index, sentence in enumerate(_sentences(narration)):
                             path = media_dir / f'sentence_{index + 1:04d}.wav'
                             returned = synthesize(sentence, voice, str(path), manifest.get('language', 'zh'))
                             if not returned or not Path(returned).is_file():
@@ -454,11 +505,11 @@ class BookPipelineService:
                     page['media']['tts'] = {'status': status, 'cache_key': tts_key, 'path': rel,
                                             'url': self.asset_url(book_id, rel), 'duration': duration,
                                             'sentences': sentences, 'voice': voice, 'cached': False,
-                                            'silent_reason': 'confirmed_empty_page' if not text else None}
+                                            'silent_reason': None if narration else ('confirmed_empty_page' if not text else 'no_narration_text')}
                 else:
                     page['media']['tts']['cached'] = True
                 stage = 'video'
-                prompt = '保持原页画风、角色和构图，轻微自然运动，不添加文字。页面转录：' + text
+                prompt = '保持原页画风、角色和构图，轻微自然运动，不添加文字。页面转录：' + narration
                 video_key = _hash({**base_key, 'stage': 'video', 'prompt': prompt})
                 video_rel = f"media/{page['page_id']}/{video_key[:24]}/clip.mp4"
                 video_path = self.book_dir(book_id) / video_rel
@@ -495,11 +546,18 @@ class BookPipelineService:
                 manifest['exports'] = None
                 self._save_manifest(book_id, manifest)
                 self._update_job(job_id, progress={'current': len(completed), 'total': len(selected), 'page_id': page['page_id']})
-            except Exception:
+            except Exception as exc:
+                # One page failing must not abandon the rest of the book (or waste finished paid calls).
+                reason = str(exc) if isinstance(exc, PipelineError) else type(exc).__name__
                 page['media'].setdefault(stage, {})['status'] = 'failed'
-                page['media'][stage]['error'] = '生成未完成，请检查适配器配置或重试'
+                page['media'][stage]['error'] = ('朗读' if stage == 'tts' else '动画') + '生成未完成（' + reason[:120] + '），可重试'
                 self._save_manifest(book_id, manifest)
-                raise
+                failures.append((page['page_num'], stage, reason))
+                if isinstance(exc, PipelineError) and exc.status == 503:
+                    break  # the adapter is not configured at all; other pages would fail the same way
+        if failures:
+            listed = '、'.join(f"第{num}页{'朗读' if stage == 'tts' else '动画'}（{reason[:60]}）" for num, stage, reason in failures[:6])
+            raise PipelineError(f'已完成 {len(completed)} / {len(selected)} 页；未完成：{listed}' + ('…' if len(failures) > 6 else '') + '。可点“重试”只补做未完成的页', 502)
         return {'book_id': book_id, 'page_ids': completed}
 
     def _export(self, book_id, payload, job_id):

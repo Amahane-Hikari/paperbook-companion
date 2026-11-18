@@ -377,3 +377,37 @@ def test_picture_vocabulary_finds_wordless_pages_but_is_marked_inferred(pipeline
     # Text evidence still outranks picture vocabulary.
     ranked = service.qa(book, {'question': 'Rabbit apples squirrel'})
     assert ranked['citations'][0]['page_id'] == 'p0001'
+
+
+def test_sentences_keep_closing_quotes_and_narration_skips_layout_furniture():
+    from app.book_pipeline import _sentences, _narration_text
+    text = ('夏天热，夏天长，夏天菜园菜成行。\n“绿色的蔬菜，红色的蔬菜，\n黄色的蔬菜，我都爱！”\n“快看，有个番茄在动！”\n'
+            '汉字源流\n甲骨文\n楷书\n夏\n金文\n小篆\n隶书\n阅读指导\n猜一猜，番茄为什么会动？')
+    narration = _narration_text(text)
+    assert '汉字源流' not in narration and '阅读指导' not in narration and '猜一猜' not in narration
+    sentences = _sentences(narration)
+    assert sentences == ['夏天热，夏天长，夏天菜园菜成行。', '“绿色的蔬菜，红色的蔬菜，', '黄色的蔬菜，我都爱！”', '“快看，有个番茄在动！”']
+    assert all(any(ch.isalnum() for ch in s) for s in sentences)
+    assert _narration_text('仅供第二届北京市大学生“人工智能+”创新大赛使用，请勿外传\nThe fox ran.') == 'The fox ran.'
+    assert _sentences('Run! "Stop," he said. Then he left.') == ['Run!', '"Stop," he said.', 'Then he left.']
+
+
+def test_one_failing_page_does_not_abandon_the_book_and_retry_drops_force(pipeline):
+    client, service, calls, *_ = pipeline
+    book = imported(client, service)
+    real = service.adapters['synthesize']
+    def flaky(text, voice, output_path, language):
+        if 'Fox' in text:
+            raise RuntimeError('NoAudioReceived')
+        return real(text, voice, output_path, language)
+    service.adapters['synthesize'] = flaky
+    job = media(client, service, book, force=True)
+    assert job['status'] == 'failed' and '第1页朗读' in job['error'] and '1 / 2' in job['error']
+    pages = service.manifest(book)['pages']
+    assert pages[0]['media']['tts']['status'] == 'failed' and pages[1]['media']['video']['status'] == 'ready'
+    service.adapters['synthesize'] = real
+    videos = calls['video']
+    client.post(f"/api/jobs/{job['job_id']}/retry")
+    retried = service.wait_for_job(job['job_id'])
+    assert retried['status'] == 'succeeded' and retried['request']['force'] is False
+    assert calls['video'] == videos + 1  # only the failed page made a new (paid) video call
