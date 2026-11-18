@@ -32,6 +32,7 @@ from book_ingest import (
     checked_page_number,
     contained_path,
     ingest_page as ingest_page_impl,
+    normalize_bbox,
     upsert_page as upsert_ingest_page,
     IngestError,
     rel_to_target,
@@ -40,6 +41,7 @@ from book_ingest import (
 )
 from book_pipeline import _sentences, _tokens
 from book_video import concatenate_wav, wav_duration
+from pdf_book_reader import PDFInputError, open_pdf_document
 import local_tts
 from volcano_video import VolcanoVideoGenerator
 
@@ -247,16 +249,9 @@ def _fitz():
 
 def _open_doc(pdf_path):
     try:
-        doc = _fitz().open(pdf_path)
-    except (OSError, RuntimeError, ValueError) as exc:
-        raise IngestError("PDF 无法打开，请检查文件是否完整") from exc
-    if doc.needs_pass:
-        doc.close()
-        raise IngestError("请先移除 PDF 的密码保护")
-    if not 1 <= doc.page_count <= config.BOOK_MAX_PAGES:
-        doc.close()
-        raise IngestError(f"PDF 页数必须在 1 到 {config.BOOK_MAX_PAGES} 之间")
-    return doc
+        return open_pdf_document(pdf_path, max_pages=config.BOOK_MAX_PAGES)
+    except PDFInputError as exc:
+        raise IngestError(str(exc)) from exc
 
 
 def _selected_page(doc, page_no):
@@ -332,8 +327,6 @@ class UploadTooLarge(IngestError):
 def create_upload(file_storage):
     """保存上传的 PDF，返回 upload_id、总页数、第 1 页预览。"""
     filename = getattr(file_storage, "filename", "") or "upload.pdf"
-    if not filename.lower().endswith(".pdf"):
-        raise IngestError("请上传 PDF 文件")
     upload_id = _new_id("up")
     target = _upload_dir(upload_id)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -347,12 +340,10 @@ def create_upload(file_storage):
             while chunk := file_storage.read(min(1024 * 1024, maximum - size + 1)):
                 if size + len(chunk) > maximum:
                     raise UploadTooLarge("PDF 超过上传大小限制")
-                if size == 0 and b"%PDF-" not in chunk[:1024]:
-                    raise IngestError("这个文件不是有效的 PDF，请重新选择")
                 size += len(chunk)
                 output.write(chunk)
             if not size:
-                raise IngestError("这个文件不是有效的 PDF，请重新选择")
+                raise IngestError("上传的文件为空，请重新选择 PDF")
         with _open_doc(source) as doc:
             count = doc.page_count
             preview = Path("preview") / "page1.jpg"
@@ -590,7 +581,8 @@ def _entity_notes(entry, story_notes):
     out = []
     for index, entity in enumerate(entry.get("entities", []) or []):
         name = str(entity.get("name_cn") or "").strip()
-        note = provided.get(name) or str(entity.get("description") or "").strip()
+        description = str(entity.get("description") or "").strip()
+        note = description or provided.get(name)
         if not note:
             note = f"这是{name}。"
         if len(note) > 80:
@@ -600,7 +592,7 @@ def _entity_notes(entry, story_notes):
             "name_cn": name,
             "name_en": str(entity.get("name_en") or "").strip(),
             "bbox": entity.get("bbox"),
-            "description": str(entity.get("description") or "").strip(),
+            "description": description,
             "note": note,
         })
     return out
@@ -844,15 +836,27 @@ def _fail(job, stage, message, reason):
 # 点读与问答
 # ---------------------------------------------------------------------------
 
-def _hit_entity(entities, x, y, pad=0.012):
+def _box_contains(bbox, x, y):
+    return bbox[0] <= x <= bbox[2] and bbox[1] <= y <= bbox[3]
+
+
+def _known_box(entry):
+    if isinstance(entry, dict):
+        try:
+            return normalize_bbox(entry.get("bbox"), strict=True)
+        except ValueError:
+            pass
+    return None
+
+
+def _hit_entity(entities, x, y):
     hits = []
     for entity in entities:
-        try:
-            x1, y1, x2, y2 = [float(v) for v in entity.get("bbox")]
-        except Exception:
+        bbox = _known_box(entity)
+        if not bbox or not _box_contains(bbox, x, y):
             continue
-        if x1 - pad <= x <= x2 + pad and y1 - pad <= y <= y2 + pad:
-            hits.append((abs((x2 - x1) * (y2 - y1)), entity))
+        x1, y1, x2, y2 = bbox
+        hits.append(((x2 - x1) * (y2 - y1), entity))
     if not hits:
         return None
     hits.sort(key=lambda item: item[0])
@@ -864,27 +868,46 @@ def _vision_click(job, x, y):
 
     with Image.open(image_path) as img:
         width, height = img.size
-        cx, cy = min(width - 1, int(x * width)), min(height - 1, int(y * height))
-        radius = max(1, round(min(width, height) * 0.28))
-        left = max(0, cx - radius)
-        top = max(0, cy - radius)
-        right = min(width, cx + radius)
-        bottom = min(height, cy + radius)
+        click_x, click_y = x * width, y * height
+        radius = max(2, round(min(width, height) * 0.23))
+        left = max(0, math.floor(click_x - radius))
+        top = max(0, math.floor(click_y - radius))
+        right = min(width, math.ceil(click_x + radius))
+        bottom = min(height, math.ceil(click_y + radius))
+        crop_width, crop_height = right - left, bottom - top
+        local_x, local_y = (click_x - left) / crop_width, (click_y - top) / crop_height
         crop = io.BytesIO()
         img.crop((left, top, right, bottom)).save(crop, format="JPEG", quality=90)
+        overview = img.copy()
+        overview.thumbnail((896, 896), Image.Resampling.LANCZOS)
+        reference = io.BytesIO()
+        overview.save(reference, format="JPEG", quality=88)
     prompt = (
-        f"这是绘本页面的局部截图。用户点击了距左边 {(cx - left) / (right - left):.0%}、"
-        f"距上边 {(cy - top) / (bottom - top):.0%} 的位置。"
-        "只识别该位置最主要的对象。输出 JSON："
-        '{"name_cn":"...","description":"一句儿童化讲解"}。'
-        "如果该处没有明确物体，name_cn 返回空字符串。"
+        "第一张图是点击附近的局部，第二张图是整页，仅用于理解场景。"
+        f"点击点为第一张图内部 x={local_x:.4f}、y={local_y:.4f}。"
+        "找出点击点实际落入的最小可辨认物体，结合整页判断具体名称。"
+        "框住第一张图中这个物体的可见轮廓，使用 0 到 1 的 xyxy 坐标。"
+        "bbox 仅以第一张图的左上为 (0,0)、右下为 (1,1)。讲解只描述能看到的特征。"
+        '只输出 JSON，如 {"coord_space":"normalized_0_1","name_cn":"...",'
+        '"description":"一句儿童化讲解","bbox":[0.2,0.2,0.7,0.8]}。'
+        '点击空白或无法确认时，返回 {"name_cn":"","bbox":null}。'
     )
-    data = vision_request(crop.getvalue(), prompt, retries=0)
-    name = str(data.get("name_cn") or "").strip()[:80]
-    if not name:
+    data = vision_request(crop.getvalue(), prompt, retries=0, reference_image=reference.getvalue())
+    name = data.get("name_cn")
+    bbox = normalize_bbox(data.get("bbox"), strict=True)
+    if (not isinstance(name, str) or not name.strip() or not bbox
+            or data.get("coord_space", "normalized_0_1") != "normalized_0_1"
+            or not _box_contains(bbox, local_x, local_y)):
         raise IngestError("这里没有识别到可讲解的内容")
-    note = str(data.get("description") or "").strip()[:200] or f"这是{name}。"
-    return {"name_cn": name, "note": note}
+    name = name.strip()[:80]
+    description = data.get("description")
+    note = (description.strip()[:200] if isinstance(description, str) else "") or f"这是{name}。"
+    x1, y1, x2, y2 = bbox
+    page_bbox = [(left + x1 * crop_width) / width, (top + y1 * crop_height) / height,
+                 (left + x2 * crop_width) / width, (top + y2 * crop_height) / height]
+    if not normalize_bbox(page_bbox, strict=True):
+        raise IngestError("识别框太小，无法在原页上准确定位")
+    return {"name_cn": name, "note": note, "bbox": page_bbox}
 
 
 def point_read(job_id, x, y, allow_vision=True):
@@ -914,7 +937,7 @@ def point_read(job_id, x, y, allow_vision=True):
             "bbox": hit.get("bbox"),
         }
 
-    text = _hit_entity(result.get("text_blocks", []), x, y, pad=0)
+    text = _hit_entity(result.get("text_blocks", []), x, y)
     if text:
         return {"success": True, "matched": True, "source": "text", "name": "本页文字",
                 "label": "本页文字", "note": text["text"], "audio_url": None, "bbox": text["bbox"]}
@@ -922,11 +945,13 @@ def point_read(job_id, x, y, allow_vision=True):
     if not allow_vision or not vision_configured():
         return {"success": True, "matched": False, "message": "这里没有可讲解的内容，换个位置点点看"}
 
-    key = f"{round(x * 20) / 20:.2f}_{round(y * 20) / 20:.2f}"
+    key = f"{x:.4f}_{y:.4f}"
     with _JOBS_LOCK:
         cache = job.setdefault("point_cache", {})
-        if key in cache:
-            return {**cache[key], "source": "vision-cache"}
+        cached = cache.get(key)
+        bbox = _known_box(cached)
+        if bbox and _box_contains(bbox, x, y):
+            return {**cached, "source": "vision-cache"}
 
     try:
         found = _vision_click(job, x, y)
@@ -937,9 +962,6 @@ def point_read(job_id, x, y, allow_vision=True):
             "message": "这里暂时没有识别到可讲解的内容，换个位置点点看",
         }
 
-    half = 0.09
-    bbox = [round(max(0, x - half), 4), round(max(0, y - half), 4),
-            round(min(1, x + half), 4), round(min(1, y + half), 4)]
     note = found["note"]
     audio_url = _synthesize_interaction(job, note, "points", f"point_{key}.wav")
 
@@ -951,7 +973,7 @@ def point_read(job_id, x, y, allow_vision=True):
         "label": f"🔍 {found['name_cn']}",
         "note": note,
         "audio_url": audio_url,
-        "bbox": bbox,
+        "bbox": found["bbox"],
     }
     with _JOBS_LOCK:
         cache[key] = payload

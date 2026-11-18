@@ -49,6 +49,10 @@
 
 单页速读优先使用 PDF 文字层，扫描页走 OCR。缺少配音或动画时，播放器显示文字旁白和原页图，并报告原因。文字区和实体框在原页坐标中点读。问答支持 `model` 和 `page_content` 两种来源。返回的 `/api/quickbook/assets/…` 和 `/api/ingest/assets/…` URL 提供生成的媒体。同样可搭配 `/tts-story-book` 前缀访问。
 
+整本和单页上传通过 PDF 解析器验证内容，可处理文件名无扩展名或含前导字节的可读 PDF。空文件、非 PDF、损坏、密码保护及页数越界会在进入生成流程前报告。
+
+单页的 `entities[].bbox` 按原页图的 `normalized_0_1` 左上、右下坐标标注。点位落入嵌套实体时优先命中较小的框。视觉补识别用原页缩略图理解场景，用裁图定位物体。服务端检查返回框包含点击点，再将它转换到原页坐标。
+
 页图入库的坐标空间为 `normalized_0_1`。JSON 的 `images` 可以是 base64 字符串或含 `image_base64`、`filename`、`order` 的对象。页码从 1 开始。单张图片最多 16 MiB，整个请求及总页数受 `BOOK_MAX_UPLOAD_BYTES` 和 `BOOK_MAX_PAGES` 限制。数据存放于配置的 `TARGET_DIR` 下，速读上传暂存于 `output_dir/quick_uploads/`，速读结果与入库清单保存于 `bookshelf/`。
 
 视觉、旁白写作、问答和图生视频使用配置的提供方。配置对应能力后，服务会将相关页图、裁图、文本或问题发送给提供方。当前配音通过 Edge TTS 将朗读文本发送给语音服务。
