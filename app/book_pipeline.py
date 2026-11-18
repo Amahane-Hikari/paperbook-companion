@@ -23,11 +23,11 @@ from flask import jsonify, request, send_file
 from PIL import Image
 
 try:
-    from .pdf_book_reader import PDFBookReader
+    from .pdf_book_reader import PDFBookReader, PDFInputError, open_pdf_document
     from .book_video import (MediaError, concatenate_wav, export_book, probe_media,
                              wav_duration, write_silence)
 except ImportError:
-    from pdf_book_reader import PDFBookReader
+    from pdf_book_reader import PDFBookReader, PDFInputError, open_pdf_document
     from book_video import (MediaError, concatenate_wav, export_book, probe_media,
                             wav_duration, write_silence)
 
@@ -248,9 +248,11 @@ class BookPipelineService:
                         raise PipelineError('PDF 超过上传大小限制', 413)
                     digest.update(chunk)
                     target.write(chunk)
-            with source.open('rb') as stream:
-                if b'%PDF-' not in stream.read(1024):
-                    raise PipelineError('文件不是有效的 PDF')
+            try:
+                with open_pdf_document(source, max_pages=self.max_pages):
+                    pass
+            except PDFInputError as exc:
+                raise PipelineError(str(exc)) from exc
             name = title or Path(upload.filename or '绘本.pdf').stem
             name = str(name).strip()[:200] or '绘本'
             manifest = {'schema_version': 1, 'book_id': book_id, 'title': name, 'status': 'queued',

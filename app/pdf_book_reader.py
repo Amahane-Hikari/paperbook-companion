@@ -19,6 +19,40 @@ class ReaderConfigurationError(RuntimeError):
     pass
 
 
+class PDFInputError(ValueError):
+    """A safe message about a PDF that cannot be imported."""
+
+
+def open_pdf_document(pdf_path, max_pages=100):
+    """Open a validated PDF from disk. The caller closes the returned document."""
+    page_limit = int(max_pages)
+    try:
+        # Let MuPDF identify the content. A filename or a fixed-length header
+        # scan cannot tell whether the file contains a readable PDF.
+        document = fitz.open(Path(pdf_path))
+        try:
+            if not document.is_pdf:
+                raise PDFInputError('这个文件不是有效的 PDF，请重新选择')
+            if document.needs_pass:
+                raise PDFInputError('请先移除 PDF 的密码保护')
+            if not 1 <= document.page_count <= page_limit:
+                raise PDFInputError(f'PDF 页数必须在 1 到 {page_limit} 之间')
+        except BaseException:
+            document.close()
+            raise
+    except PDFInputError:
+        raise
+    except fitz.EmptyFileError:
+        message = 'PDF 文件为空，请重新选择'
+    except Exception:
+        message = '无法读取有效的 PDF，请检查文件是否完整'
+    else:
+        return document
+    # MuPDF's traceback may hold the source stream open on Windows. Release
+    # it before raising so callers can remove rejected uploads immediately.
+    raise PDFInputError(message)
+
+
 def _json_content(content):
     text = content.strip()
     if text.startswith('```'):
@@ -127,12 +161,8 @@ class PDFBookReader:
         output = Path(output_dir)
         (output / 'images').mkdir(parents=True, exist_ok=True)
         pages, warnings = [], []
-        with fitz.open(pdf_path) as document:
-            if document.needs_pass:
-                raise ValueError('不支持加密 PDF')
-            total = len(document)
-            if not total or total > int(max_pages):
-                raise ValueError(f'PDF 页数必须在 1 到 {max_pages} 之间')
+        with open_pdf_document(pdf_path, max_pages) as document:
+            total = document.page_count
             for index, pdf_page in enumerate(document):
                 page_id = f'p{index + 1:04d}'
                 relative = f'images/{page_id}.png'

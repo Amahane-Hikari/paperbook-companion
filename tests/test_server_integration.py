@@ -116,6 +116,60 @@ def test_quick_pdf_generates_readable_page_and_recovers_from_disk(server, monkey
     assert answer['source'] == 'page_content' and 'Rabbit' in answer['answer']
 
 
+def test_quick_pdf_upload_checks_document_content_instead_of_name_or_header_offset(server):
+    client = server.app.test_client()
+    route = '/tts-story-book/api/quickbook/upload'
+    response = client.post(route, data={
+        'file': (io.BytesIO(b'\x00' * 2048 + document()), 'download', 'application/octet-stream')})
+    assert response.status_code == 200
+    result = response.get_json()
+    assert result['page_count'] == 2 and client.get(result['image_url']).mimetype == 'image/jpeg'
+
+    root = Path(server.TARGET_DIR) / 'output_dir' / 'quick_uploads'
+    before = set(root.iterdir())
+    for content in (b'', b'<html>Download this file</html>', b'%PDF-1.7\n%%EOF\n'):
+        invalid = client.post(route, data={'file': (io.BytesIO(content), 'invalid.pdf')})
+        assert invalid.status_code == 400 and not invalid.get_json()['success']
+        assert set(root.iterdir()) == before
+
+
+def test_quick_point_uses_tight_object_boxes_and_projects_localized_vision(server, monkeypatch, tmp_path):
+    from PIL import Image
+    import quick_book
+
+    page_image = tmp_path / 'page.jpg'
+    Image.new('RGB', (1000, 500)).save(page_image)
+    basket = {'name_cn': '篮子', 'bbox': [.25, .25, .60, .75]}
+    apple = {'name_cn': '苹果', 'bbox': [.30, .35, .40, .45]}
+    old_invalid = {'name_cn': '错误框', 'bbox': [800, 200, 950, 260]}
+    job = {'status': 'ready', 'book_id': 'example', 'result': {
+        'image_name': 'page.jpg', 'entities': [old_invalid, basket, apple]}}
+    monkeypatch.setattr(quick_book, 'get_job', lambda job_id: job)
+    monkeypatch.setattr(quick_book, 'ingest_asset_path', lambda *args: page_image)
+    monkeypatch.setattr(quick_book, 'vision_configured', lambda: True)
+    monkeypatch.setattr(quick_book, '_synthesize_interaction', lambda *args: None)
+    monkeypatch.setattr(quick_book, '_save_job', lambda job: None)
+
+    calls = []
+    def vision(image, prompt, *, reference_image, **kwargs):
+        with Image.open(io.BytesIO(image)) as crop, Image.open(io.BytesIO(reference_image)) as overview:
+            assert crop.size == (215 + len(calls), 230) and overview.size == (896, 448)
+        assert 'bbox 仅以第一张图的左上' in prompt
+        calls.append(prompt)
+        bbox = [.30, .20, .80, .70] if len(calls) == 1 else [.70, .20, .97, .70]
+        return {'coord_space': 'normalized_0_1', 'name_cn': '花朵', 'bbox': bbox}
+
+    monkeypatch.setattr(quick_book, 'vision_request', vision)
+    assert quick_book.point_read('test', .35, .40)['name'] == '苹果'
+    assert quick_book.point_read('test', .295, .40)['name'] == '篮子'
+    localized = quick_book.point_read('test', .10, .50)
+    assert localized['name'] == '花朵'
+    assert localized['bbox'] == pytest.approx([.0645, .362, .172, .592])
+    assert quick_book.point_read('test', .10, .50)['source'] == 'vision-cache'
+    assert not quick_book.point_read('test', .101, .50)['matched']
+    assert len(calls) == 2
+
+
 def test_ingest_accepts_multipart_and_json_and_keeps_page_order(server, monkeypatch):
     import book_ingest
     from PIL import Image

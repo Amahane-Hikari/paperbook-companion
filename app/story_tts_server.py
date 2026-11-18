@@ -8,6 +8,8 @@ import threading
 import time
 import os
 import json
+import sys
+import webbrowser
 import numpy as np
 
 import asyncio
@@ -2758,11 +2760,38 @@ def book_speak(book_id):
                    duration=wav_duration(path))
 
 
+def _print_service_urls(host, port):
+    browser_host = {'0.0.0.0': '127.0.0.1', '::': '::1'}.get(host, host)
+    if ':' in browser_host and not browser_host.startswith('['):
+        browser_host = f'[{browser_host}]'
+    base_url = f'http://{browser_host}:{port}'
+    quick_url = f'{base_url}/quick'
+    print(f'纸书智伴工作台 {base_url}/')
+    print(f'单页速读 {quick_url}')
+    print(f'主题故事创作 {base_url}/tts_v2.html')
+    print('能力检查只验证本机配置与依赖；模型服务仍需实际联调。')
+    return quick_url
+
+
+def _open_quick_browser(url):
+    try:
+        if webbrowser.open(url):
+            return
+    except (OSError, webbrowser.Error):
+        pass
+    print(f'无法自动打开浏览器，请手动访问 {url}')
+
+
 if __name__ == '__main__':
     host, port = os.environ.get('HOST', '127.0.0.1'), int(os.environ.get('PORT', '5000'))
-    print(f'纸书智伴工作台: http://{host}:{port}/')
-    print(f'单页速读: http://{host}:{port}/quick')
-    print(f'主题故事创作: http://{host}:{port}/tts_v2.html')
-    print('能力检查只验证本机配置与依赖；模型服务仍需实际联调。')
-    app.run(host=host, port=port, debug=False, threaded=True)
+    if '--open-quick' in sys.argv[1:]:
+        from werkzeug.serving import make_server
+
+        with make_server(host, port, app, threaded=True) as server:
+            quick_url = _print_service_urls(host, server.server_port)
+            threading.Thread(target=_open_quick_browser, args=(quick_url,), daemon=True).start()
+            server.serve_forever()
+    else:
+        _print_service_urls(host, port)
+        app.run(host=host, port=port, debug=False, threaded=True)
 

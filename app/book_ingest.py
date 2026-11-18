@@ -27,6 +27,7 @@ from PIL import Image, ImageOps
 import config
 
 COORD_SPACE = "normalized_0_1"
+BBOX_FORMAT = "xyxy"
 DEFAULT_MAX_SIDE = 2000
 MAX_SOURCE_PIXELS = 40_000_000
 
@@ -103,31 +104,32 @@ def vision_configured():
     return config.service_configured(config.image_analysis_url, config.image_api_key, config.image_model)
 
 
-def normalize_bbox(raw):
-    """把模型输出统一转换为 0-1 bbox。
+def normalize_bbox(raw, *, strict=False):
+    """把 bbox 统一转换为 0-1 xyxy 坐标。
 
-    允许模型返回 0-1000 相对坐标（常见做法），这里检测并换算；
-    对外只输出 0-1，绝不保留像素或 0-1000 值。
+    strict 用于声明了 0-1 xyxy 的结果。旧版输出和回退 OCR 兼容
+    0-1000 相对坐标以及颠倒的边界。
     """
     if not isinstance(raw, (list, tuple)) or len(raw) != 4:
         raise ValueError("bbox 必须是长度为 4 的数组")
-    values = []
-    for item in raw:
-        try:
-            values.append(float(item))
-        except (TypeError, ValueError):
-            raise ValueError(f"bbox 含非数字项: {raw}")
+    if strict and any(type(item) not in (int, float) for item in raw):
+        raise ValueError("bbox 坐标必须是数字")
+    try:
+        values = [float(item) for item in raw]
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"bbox 含无效数字: {raw}") from exc
     if not all(math.isfinite(value) for value in values):
         raise ValueError("bbox 坐标必须为有限数字")
-    scale = 1000.0 if max(values) > 1.5 else 1.0
+    scale = 1000.0 if not strict and max(values) > 1.5 else 1.0
     vals = [v / scale for v in values]
     if any(v < 0 or v > 1 for v in vals):
         raise ValueError(f"bbox 超出 {COORD_SPACE} 范围: {raw}")
     x1, y1, x2, y2 = vals
-    if x1 > x2:
-        x1, x2 = x2, x1
-    if y1 > y2:
-        y1, y2 = y2, y1
+    if x1 > x2 or y1 > y2:
+        if strict:
+            raise ValueError("bbox 必须按左上、右下顺序给出")
+        x1, x2 = sorted((x1, x2))
+        y1, y2 = sorted((y1, y2))
     if x2 - x1 < 0.005 or y2 - y1 < 0.005:
         raise ValueError(f"bbox 面积过小: {raw}")
     return [round(x1, 4), round(y1, 4), round(x2, 4), round(y2, 4)]
@@ -345,6 +347,8 @@ SEMANTIC_PROMPT = """你是绘本页面结构化助手。请只输出一个 JSON
 
 输出结构：
 {
+  "coord_space": "normalized_0_1",
+  "bbox_format": "xyxy",
   "description": "画面里发生了什么（1-2句，具体到人物动作与环境）",
   "characters": ["出场角色中文名", "..."],
   "scene": "场景（地点/时间/氛围，短语）",
@@ -354,26 +358,33 @@ SEMANTIC_PROMPT = """你是绘本页面结构化助手。请只输出一个 JSON
     {
       "name_cn": "实体中文名（如 白兔、红苹果、编织篮）",
       "name_en": "英文名",
-      "bbox": [左上x, 左上y, 右下x, 右下y],
+      "bbox": [0.12, 0.24, 0.31, 0.58],
       "description": "一句话描述该实体在此页的形态/状态"
     }
   ]
 }
 
 要求：
-1. bbox 使用 0-1000 相对坐标（左上角为原点），覆盖该实体主要可见区域，不要输出像素坐标。
-2. entities 只给 4-6 个画面中真实可见、可点读的实体（角色、道具、显著景物），按视觉重要性排序。
-3. characters 必须是画面中真实出场的角色，不要臆测。
-4. 所有字段用中文填写（name_en 除外）。
+1. 保留上述 coord_space 和 bbox_format。bbox 按 [左边x, 上边y, 右边x, 下边y] 给出四个 0 到 1 的数字。
+   用整张输入图量位置，左上角为 (0, 0)，右下角为 (1, 1)。x 按整图宽度计算，y 按整图高度计算。
+2. 为每个实体分别框出紧贴其可见轮廓的矩形，缩小空白并避免包含相邻物体或文字。
+   即使一个物体处在另一个物体中，也根据各自可见轮廓分别标框，例如篮子里的苹果。
+3. entities 最多给 6 个真实可见、可辨认且容易点读的实体（如角色、独立道具、显著景物），按视觉重要性排序。
+   同一个实体只给一个框。有几个就给几个，没有则返回空数组。以图片为准，不根据参考文字添加图中没有的实体。
+4. characters 只列出画面中可见的角色。除 name_en 和两个坐标声明外，文字字段用中文填写。
 5. 输出要精简：description 不超过 50 字，plot_summary 不超过 30 字，style_anchor 不超过 20 字，每个实体的 description 不超过 20 字。"""
 
 
-def vision_request(image, prompt, *, parser=None, retries=2, extra_context="", timeout=60):
+def vision_request(image, prompt, *, parser=None, retries=2, extra_context="", timeout=60, reference_image=None):
     if not vision_configured():
         raise VisionError("IMAGE_ANALYSIS_URL / IMAGE_API_KEY 未配置，无法调用视觉语义模型")
 
-    image_data = image if isinstance(image, bytes) else Path(image).read_bytes()
-    b64 = base64.b64encode(image_data).decode("ascii")
+    image_inputs = (image,) if reference_image is None else (image, reference_image)
+    image_parts = []
+    for source in image_inputs:
+        data = source if isinstance(source, bytes) else Path(source).read_bytes()
+        encoded = base64.b64encode(data).decode("ascii")
+        image_parts.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded}"}})
     if parser is None:
         parser = lambda content: json.loads(_extract_json(content))
     headers = {
@@ -394,7 +405,7 @@ def vision_request(image, prompt, *, parser=None, retries=2, extra_context="", t
                 {"role": "system", "content": "你是严谨的绘本图像结构化助手，只输出合法 JSON。"},
                 {"role": "user", "content": [
                     {"type": "text", "text": prompt_text},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                    *image_parts,
                 ]},
             ],
         }
@@ -416,6 +427,16 @@ def vision_request(image, prompt, *, parser=None, retries=2, extra_context="", t
     raise VisionError(f"视觉识别失败（已尝试 {retries + 1} 次），请检查服务配置或稍后重试") from last_error
 
 
+def _bbox_iou(first, second):
+    """计算两个有效 xyxy 框的交并比。"""
+    width = max(0, min(first[2], second[2]) - max(first[0], second[0]))
+    height = max(0, min(first[3], second[3]) - max(first[1], second[1]))
+    intersection = width * height
+    first_area = (first[2] - first[0]) * (first[3] - first[1])
+    second_area = (second[2] - second[0]) * (second[3] - second[1])
+    return intersection / (first_area + second_area - intersection)
+
+
 def _parse_semantic_json(content):
     raw = _extract_json(content)
     data = json.loads(raw)
@@ -425,6 +446,11 @@ def _parse_semantic_json(content):
     missing = [k for k in ("description", "characters", "scene", "plot_summary", "style_anchor") if k not in data]
     if missing:
         raise ValueError(f"缺少字段: {missing}")
+    strict_bbox = "coord_space" in data or "bbox_format" in data
+    coord_space = data.get("coord_space", COORD_SPACE)
+    bbox_format = data.get("bbox_format", BBOX_FORMAT)
+    if coord_space != COORD_SPACE or bbox_format != BBOX_FORMAT:
+        raise ValueError("实体坐标须使用 normalized_0_1 xyxy 格式")
 
     characters = data.get("characters") or []
     if isinstance(characters, str):
@@ -443,6 +469,7 @@ def _parse_semantic_json(content):
         raise ValueError("entities 必须是数组")
 
     entities = []
+    boxes_by_label = {}
     for item in raw_entities[:30]:
         if not isinstance(item, dict):
             continue
@@ -450,12 +477,19 @@ def _parse_semantic_json(content):
         if not name_cn:
             continue
         try:
-            bbox = normalize_bbox(item.get("bbox"))
+            bbox = normalize_bbox(item.get("bbox"), strict=strict_bbox)
         except ValueError:
             continue
+        name_en = str(item.get("name_en") or "").strip()[:80]
+        labels = {" ".join(name.casefold().split()) for name in (name_cn, name_en) if name}
+        matching_boxes = (existing for label in labels for existing in boxes_by_label.get(label, ()))
+        if any(_bbox_iou(bbox, existing) >= 0.85 for existing in matching_boxes):
+            continue
+        for label in labels:
+            boxes_by_label.setdefault(label, []).append(bbox)
         entities.append({
             "name_cn": name_cn,
-            "name_en": str(item.get("name_en") or "").strip()[:80],
+            "name_en": name_en,
             "bbox": bbox,
             "description": str(item.get("description") or "").strip()[:200],
         })

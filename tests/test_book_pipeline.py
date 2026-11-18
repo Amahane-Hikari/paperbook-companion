@@ -103,6 +103,41 @@ def media(client, service, book_id, **payload):
     return service.wait_for_job(response.get_json()['job_id'])
 
 
+def test_import_validates_actual_pdf_before_creating_a_job(tmp_path):
+    app = Flask(__name__)
+    service = register_book_routes(app, {'data_dir': str(tmp_path / 'books'), 'max_pages': 2},
+                                   {'reader_factory': LocalReader})
+    client = app.test_client()
+    pdf = pdf_bytes()
+    with fitz.open(stream=pdf) as document:
+        locked_pdf = document.tobytes(encryption=fitz.PDF_ENCRYPT_AES_256, user_pw='reader', owner_pw='owner')
+    with io.BytesIO() as image:
+        Image.new('RGB', (10, 10)).save(image, 'PNG')
+        png = image.getvalue()
+
+    def upload(data):
+        return client.post('/api/books/import', data={'file': (io.BytesIO(data), 'example.pdf'), 'mode': 'fast'})
+
+    try:
+        for invalid, message in ((b'', '文件为空'), (b'%PDF-1.7\ncorrupt', '完整'),
+                                 (png, '有效的 PDF'), (locked_pdf, '密码保护')):
+            response = upload(invalid)
+            assert response.status_code == 400
+            assert message in response.get_json()['error']
+        assert list(service.root.iterdir()) == [service.job_dir]
+        assert not list(service.job_dir.iterdir())
+
+        # MuPDF can recover a readable file with leading data beyond the
+        # previous fixed-size header scan.
+        response = upload(b'X' * 2048 + b'\n' + pdf)
+        assert response.status_code == 202
+        payload = response.get_json()
+        assert service.wait_for_job(payload['job_id'])['status'] == 'succeeded'
+        assert service.manifest(payload['book_id'])['page_count'] == 2
+    finally:
+        service.close()
+
+
 def test_import_envelopes_modes_assets_and_stable_ids(pipeline):
     client, service, calls, *_ = pipeline
     book = imported(client, service)

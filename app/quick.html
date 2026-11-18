@@ -127,6 +127,11 @@
   #visualWrap{position:relative;width:100%;height:100%;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#0b1110}
   #pageVideo,#pageImage{max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain;display:block;background:#0b1110}
   #pageVideo{width:100%;height:100%;object-fit:contain}
+  #pointOverlays,#pointGuides{position:absolute;pointer-events:none}
+  #pointOverlays{z-index:3}
+  #pointGuides{inset:0}
+  .point-guide{position:absolute;border:2px solid #88e6cb;border-radius:6px;box-shadow:0 0 0 1px #12463980}
+  .point-guide span{position:absolute;top:0;left:0;max-width:100%;padding:2px 5px;border-radius:0 0 4px 0;background:#124639;color:white;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   #highlight{position:absolute;border:3px solid #ff5b3a;border-radius:10px;box-shadow:0 0 0 2px rgba(255,255,255,.55),0 0 24px rgba(255,91,58,.35);pointer-events:none;display:none;z-index:3}
   #highlightLabel{position:absolute;left:0;top:-38px;background:#ff5b3a;color:#fff;font-size:14px;font-weight:700;padding:5px 10px;border-radius:8px;white-space:nowrap}
   .player-top{
@@ -148,6 +153,8 @@
     background:linear-gradient(0deg,rgba(0,0,0,.76),rgba(0,0,0,.18),rgba(0,0,0,0));
     color:#fff;
   }
+  .player-top,.player-bottom{pointer-events:none}
+  .player-top button,.player-bottom button,.player-bottom details,.subtitle.transcript{pointer-events:auto}
   .subtitle{
     max-width:860px;margin:0 auto 10px;text-align:center;font-size:clamp(15px,2.4vw,19px);
     line-height:1.65;text-shadow:0 1px 6px rgba(0,0,0,.55);min-height:30px;
@@ -217,7 +224,11 @@
 
   <section class="card" id="stageUpload">
     <h2>上传一本 PDF</h2>
-    <p class="sub">拖进来，或者点一下选择文件。扫描版绘本也可以，生成时会自动识别页面上的文字和画面。</p>
+    <p class="sub" id="uploadHelp">拖进来，或者点一下选择文件。扫描版绘本也可以，生成时会自动识别页面上的文字和画面。</p>
+    <div id="localLaunch" hidden>
+      <p>上传 PDF 需要启动纸书智伴服务。双击项目里的「启动服务.bat」，然后用浏览器打开启动窗口显示的单页速读地址。</p>
+      <a class="btn btn-main" href="http://127.0.0.1:5000/quick">打开本地单页速读</a>
+    </div>
     <div class="upload-zone" id="dropZone" role="button" tabindex="0" aria-label="选择 PDF 文件">
       <div class="upload-icon">📄</div>
       <div class="upload-title">把 PDF 拖到这里</div>
@@ -228,7 +239,7 @@
     <div class="file-chip" id="fileChip" style="display:none">
       <span>📘</span><strong id="fileName"></strong><span id="filePages"></span>
     </div>
-    <div class="inline-error" id="uploadError" style="display:none"></div>
+    <div class="inline-error" id="uploadError" role="alert" style="display:none"></div>
   </section>
 
   <section class="card" id="stageSelect" style="display:none">
@@ -273,7 +284,7 @@
     </div>
   </section>
 
-  <footer>
+  <footer id="otherEntrances">
     <a href="./books">整本绘本工作台</a> · <a href="./tts_v2.html">绘声慧聊编辑台</a>
   </footer>
 </div>
@@ -282,7 +293,10 @@
   <div id="visualWrap">
     <video id="pageVideo" playsinline webkit-playsinline loop muted></video>
     <img id="pageImage" alt="互动绘本画面" style="display:none">
-    <div id="highlight"><div id="highlightLabel"></div></div>
+    <div id="pointOverlays" aria-hidden="true" hidden>
+      <div id="pointGuides"></div>
+      <div id="highlight"><div id="highlightLabel"></div></div>
+    </div>
     <div class="hint" id="hint">点画面上的东西，听一听讲解</div>
     <div class="point-status" id="pointStatus">正在识别画面里的东西…</div>
     <div class="toast" id="toast"></div>
@@ -306,6 +320,7 @@
       <button class="round-btn" id="playPause">暂停</button>
       <button class="round-btn" id="replayBtn">重播</button>
       <button class="round-btn" id="visualMode" hidden>原图点读</button>
+      <button class="round-btn" id="guideToggle" aria-pressed="true" hidden>物体框</button>
       <button class="round-btn" id="askToggle">问一问</button>
       <span class="time" id="timeLabel">0:00 / 0:00</span>
     </div>
@@ -323,6 +338,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
+const openedAsFile = location.protocol === 'file:';
 const appPath = location.pathname.replace(/\/quick(?:\.html)?\/?$/, '');
 const endpoint = (path) => appPath + path;
 const state = {
@@ -334,6 +350,7 @@ const state = {
   jobId: null,
   result: null,
   playing: false,
+  pointRequest: 0,
   pointBusy: false,
   pointWasPlaying: false,
   askWasPlaying: false,
@@ -366,6 +383,13 @@ function mmss(sec){
 /* ---------------- 上传 ---------------- */
 const dropZone = $('dropZone');
 const fileInput = $('fileInput');
+if(openedAsFile){
+  $('localLaunch').hidden = false;
+  $('uploadHelp').hidden = true;
+  $('otherEntrances').hidden = true;
+  dropZone.style.display = 'none';
+  fileInput.disabled = true;
+}
 dropZone.addEventListener('click', e=>{ if(e.target !== fileInput) fileInput.click(); });
 dropZone.addEventListener('keydown', e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); fileInput.click(); }});
 ['dragenter','dragover'].forEach(ev=>dropZone.addEventListener(ev, e=>{e.preventDefault();dropZone.classList.add('drag')}));
@@ -376,24 +400,29 @@ dropZone.addEventListener('drop', e=>{
 });
 fileInput.addEventListener('change', ()=>{
   const file = fileInput.files && fileInput.files[0];
+  fileInput.value = '';
   if(file) uploadFile(file);
 });
 
 async function uploadFile(file){
-  if(!file.name.toLowerCase().endsWith('.pdf')){
-    showError($('uploadError'), '请选择 PDF 文件');
-    return;
-  }
+  if(openedAsFile) return;
   const requestId = ++state.uploadRequest;
   showError($('uploadError'), '');
   $('dropZone').querySelector('.upload-action').textContent = '正在读取 PDF…';
   const fd = new FormData();
   fd.append('file', file);
   try{
-    const resp = await fetch(endpoint('/api/quickbook/upload'), {method:'POST', body:fd});
-    const data = await resp.json();
+    const resp = await fetch(endpoint('/api/quickbook/upload'), {method:'POST', body:fd}).catch(()=>{
+      throw new Error('无法连接上传服务，请确认纸书智伴正在运行后重试。');
+    });
+    const data = await resp.json().catch(()=>null);
     if(requestId !== state.uploadRequest) return;
-    if(!resp.ok || !data.success) throw new Error(data.error || '这个 PDF 暂时读不出来');
+    if(!resp.ok || !data?.success){
+      let fallback = '上传服务没有返回可用的结果，请重试。';
+      if(resp.status === 413) fallback = 'PDF 超过上传大小限制';
+      else if(!resp.ok) fallback = `上传服务返回异常（HTTP ${resp.status}），请重试。`;
+      throw new Error(data?.error || fallback);
+    }
     ++state.generation;
     ++state.previewRequest;
     clearTimeout(state.pollTimer);
@@ -422,7 +451,7 @@ async function uploadFile(file){
   }catch(e){
     if(requestId !== state.uploadRequest) return;
     showError($('uploadError'), e.message || 'PDF 读取失败，请换一个文件再试');
-    $('dropZone').querySelector('.upload-action').textContent = '选择 PDF 文件';
+    $('dropZone').querySelector('.upload-action').textContent = state.upload ? '重新选择 PDF 文件' : '选择 PDF 文件';
   }
 }
 
@@ -610,6 +639,7 @@ let currentSegments = [];
 let highlightTimer = null;
 let interactionClip = null;
 let showOriginal = false;
+let showGuides = true;
 
 function syncVisual(){
   const animated = video.hasAttribute('src') && !showOriginal;
@@ -623,6 +653,7 @@ function syncVisual(){
   if(!animated && visualOnly) pauseAll();
   $('visualMode').textContent = showOriginal ? '返回动态画面' : '原图点读';
   hideHighlight();
+  syncPointOverlays();
 }
 
 function openPlayer(result){
@@ -665,6 +696,8 @@ function openPlayer(result){
   }
   video.load();
   showOriginal = false;
+  showGuides = true;
+  renderPointGuides(result.entities || []);
   if(hasAudio) audio.src = endpoint(result.narration.audio_url);
   else audio.removeAttribute('src');
   audio.load();
@@ -672,8 +705,8 @@ function openPlayer(result){
   state.pointBusy = false;
   player.classList.add('show');
   player.setAttribute('aria-hidden','false');
-  $('hint').classList.remove('hide');
-  setTimeout(()=>{ $('hint').classList.add('hide'); }, 5000);
+  syncPointOverlays();
+  showPointHint();
   playAll(true);
 }
 function playAll(autoplay = false){
@@ -714,9 +747,13 @@ $('replayBtn').addEventListener('click', ()=>{
   updateSubtitle();
 });
 $('visualMode').addEventListener('click', ()=>{
-  showOriginal = !showOriginal;
-  syncVisual();
+  setOriginalView(!showOriginal);
   if(!showOriginal && !audio.hasAttribute('src')) playAll();
+});
+$('guideToggle').addEventListener('click', ()=>{
+  showGuides = !showGuides;
+  syncPointOverlays();
+  showPointHint();
 });
 video.addEventListener('error', ()=>{
   if(!video.hasAttribute('src')) return;
@@ -724,6 +761,7 @@ video.addEventListener('error', ()=>{
   video.load();
   syncVisual();
   $('visualMode').hidden = true;
+  showPointHint();
   if(!audio.hasAttribute('src')){
     $('playPause').hidden = true;
     $('replayBtn').hidden = true;
@@ -736,6 +774,7 @@ $('backBtn').addEventListener('click', ()=>{
   pauseAll();
   player.classList.remove('show');
   player.setAttribute('aria-hidden','true');
+  syncPointOverlays();
   $('askPanel').classList.remove('show');
   $('stageSelect').style.display = 'block';
   $('replayLastWrap').style.display = 'block';
@@ -773,22 +812,86 @@ function contentRect(el){
   const width = mw * scale, height = mh * scale;
   return {left:r.left + (r.width-width)/2, top:r.top + (r.height-height)/2, width, height};
 }
+
+function validPointBox(bbox){
+  return Array.isArray(bbox) && bbox.length === 4 &&
+    bbox.every(value=>Number.isFinite(value) && value >= 0 && value <= 1) &&
+    bbox[2] > bbox[0] && bbox[3] > bbox[1];
+}
+function positionPointBox(element, [x1,y1,x2,y2]){
+  Object.assign(element.style, {left:`${x1*100}%`, top:`${y1*100}%`,
+    width:`${(x2-x1)*100}%`, height:`${(y2-y1)*100}%`});
+}
+function renderPointGuides(entities){
+  const area = ([x1,y1,x2,y2])=>(x2-x1)*(y2-y1);
+  const guides = entities.filter(entity=>entity?.name_cn && validPointBox(entity.bbox))
+    .sort((a,b)=>area(b.bbox)-area(a.bbox));
+  $('pointGuides').replaceChildren(...guides.map(entity=>{
+    const box = document.createElement('div');
+    const label = document.createElement('span');
+    box.className = 'point-guide';
+    label.textContent = entity.name_cn;
+    positionPointBox(box, entity.bbox);
+    box.append(label);
+    return box;
+  }));
+}
+function originalPageVisible(){
+  return player.classList.contains('show') && (showOriginal || !video.hasAttribute('src')) && image.naturalWidth > 0;
+}
+function syncPointOverlays(){
+  const visible = originalPageVisible();
+  const overlay = $('pointOverlays');
+  const guides = $('pointGuides');
+  const toggle = $('guideToggle');
+  overlay.hidden = !visible;
+  toggle.hidden = !visible || !guides.childElementCount;
+  toggle.setAttribute('aria-pressed', String(showGuides));
+  guides.hidden = !showGuides;
+  if(!visible) return;
+  const rect = contentRect(image);
+  const wrap = $('visualWrap').getBoundingClientRect();
+  Object.assign(overlay.style, {left:`${rect.left-wrap.left}px`, top:`${rect.top-wrap.top}px`,
+    width:`${rect.width}px`, height:`${rect.height}px`});
+}
+image.addEventListener('load', syncPointOverlays);
+window.addEventListener('resize', syncPointOverlays);
+
+function showPointHint(){
+  const hint = $('hint');
+  const animated = video.hasAttribute('src') && !showOriginal;
+  hint.textContent = animated ? '点击动画可切到原图点读' :
+    (showGuides && $('pointGuides').childElementCount ? '点物体框内的位置听讲解' : '点击原页上的物体或文字');
+  hint.classList.remove('hide');
+  clearTimeout(hint.timer);
+  hint.timer = setTimeout(()=>hint.classList.add('hide'), 5000);
+}
+function setOriginalView(value){
+  showOriginal = value;
+  syncVisual();
+  if(state.pointBusy) finishPointRead();
+  showPointHint();
+}
+
 $('visualWrap').addEventListener('click', async (e)=>{
   if(!state.result || state.pointBusy || $('askPanel').classList.contains('show')) return;
-  if(video.hasAttribute('src') && !showOriginal){
-    showOriginal = true;
-    syncVisual();
-    toast('已切换为原页图，点选要讲解的位置');
+  const animated = video.hasAttribute('src') && !showOriginal;
+  if(!animated && !originalPageVisible()) return;
+  const rect = contentRect(animated ? video : image);
+  if(!rect.width || !rect.height || e.clientX < rect.left || e.clientX > rect.left+rect.width ||
+    e.clientY < rect.top || e.clientY > rect.top+rect.height) return;
+  if(animated){
+    setOriginalView(true);
     return;
   }
-  const rect = contentRect(image);
-  if(e.clientX < rect.left || e.clientX > rect.left+rect.width || e.clientY < rect.top || e.clientY > rect.top+rect.height) return;
   const x = (e.clientX - rect.left) / rect.width;
   const y = (e.clientY - rect.top) / rect.height;
   await doPointRead(x, y);
 });
 async function doPointRead(x, y){
   const result = state.result;
+  const requestId = ++state.pointRequest;
+  const isCurrent = ()=>requestId === state.pointRequest && result === state.result && originalPageVisible();
   state.pointBusy = true;
   state.pointWasPlaying = state.playing;
   pauseAll();
@@ -800,7 +903,7 @@ async function doPointRead(x, y){
       body: JSON.stringify({job_id: result.job_id, x, y, allow_vision:true})
     });
     const data = await resp.json();
-    if(result !== state.result || !player.classList.contains('show') || !state.pointBusy) return;
+    if(!isCurrent()) return;
     if(!resp.ok || !data.success) throw new Error(data.error || '点读暂时不可用');
     if(!data.matched){
       toast(data.message || '这里没有可讲解的内容，换个位置点点看', 2600);
@@ -819,24 +922,18 @@ async function doPointRead(x, y){
       highlightTimer = setTimeout(finishPointRead, 2600);
     }
   }catch(e){
-    if(result === state.result && player.classList.contains('show') && state.pointBusy){
+    if(isCurrent()){
       toast(e.message || '点读暂时不可用，请稍后再试', 2600);
       finishPointRead();
     }
   }finally{
-    if(result === state.result) $('pointStatus').style.display = 'none';
+    if(isCurrent()) $('pointStatus').style.display = 'none';
   }
 }
 function showHighlight(bbox, label){
-  if(!bbox) return;
-  const el = (video.style.display !== 'none' && video.style.display !== '') ? video : image;
-  const rect = contentRect(el);
-  const wrapRect = $('visualWrap').getBoundingClientRect();
+  if(!validPointBox(bbox)) return;
   const box = $('highlight');
-  box.style.left = `${rect.left - wrapRect.left + bbox[0]*rect.width}px`;
-  box.style.top = `${rect.top - wrapRect.top + bbox[1]*rect.height}px`;
-  box.style.width = `${(bbox[2]-bbox[0])*rect.width}px`;
-  box.style.height = `${(bbox[3]-bbox[1])*rect.height}px`;
+  positionPointBox(box, bbox);
   box.style.display = 'block';
   $('highlightLabel').textContent = label;
   clearTimeout(highlightTimer);
@@ -848,6 +945,8 @@ function finishPointRead(){
   if(shouldResume) resumeAll();
 }
 function stopInteraction(){
+  ++state.pointRequest;
+  $('pointStatus').style.display = 'none';
   if(interactionClip){
     interactionClip.onended = null;
     interactionClip.onerror = null;
@@ -929,7 +1028,7 @@ $('askInput').addEventListener('keydown', e=>{ if(e.key === 'Enter') askQuestion
 
 /* 录音并转 WAV，交给服务端本地识别 */
 $('micBtn').hidden = true;
-fetch(endpoint('/api/capabilities'), {cache:'no-store'}).then(resp=>resp.json()).then(data=>{
+if(!openedAsFile) fetch(endpoint('/api/capabilities'), {cache:'no-store'}).then(resp=>resp.json()).then(data=>{
   $('micBtn').hidden = !data.capabilities?.asr;
 }).catch(()=>{});
 $('micBtn').addEventListener('pointerdown', startRecord);
