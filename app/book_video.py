@@ -35,11 +35,31 @@ def _run(args, timeout=300):
     return result.stdout
 
 
+def _probe_wav(source):
+    """无 ffprobe 时用标准库解析 PCM WAV（前端录音固定为 16k 单声道 WAV）。"""
+    try:
+        with wave.open(str(source), 'rb') as audio:
+            frames, rate = audio.getnframes(), audio.getframerate()
+            if rate <= 0 or frames <= 0 or audio.getcomptype() != 'NONE':
+                raise MediaError('WAV 音频无效')
+            duration = frames / rate
+            codec = 'pcm_s16le' if audio.getsampwidth() == 2 else f'pcm_s{audio.getsampwidth() * 8}le'
+    except (OSError, EOFError, wave.Error) as exc:
+        raise MediaError('WAV 附件无法解析') from exc
+    return {'duration': round(duration, 6), 'width': None, 'height': None, 'fps': 0,
+            'video_codec': None, 'audio_codec': codec, 'has_video': False, 'has_audio': True}
+
+
 def probe_media(path, ffprobe=None):
     source = Path(path)
     if not source.is_file() or source.stat().st_size == 0:
         raise MediaError('媒体文件不存在或为空')
-    tool = _tool('ffprobe', ffprobe)
+    try:
+        tool = _tool('ffprobe', ffprobe)
+    except MediaError:
+        if source.suffix.lower() == '.wav':
+            return _probe_wav(source)
+        raise
     output = _run([tool, '-v', 'error', '-show_streams', '-show_format', '-of', 'json', str(source)], 30)
     try:
         result = json.loads(output)

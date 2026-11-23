@@ -132,17 +132,29 @@ class PDFBookReader:
         corrected = self._vision(image_path, '核对并纠正以下转录，只返回完整的正确转录。无文字返回[无文字页面]。转录数据：\n' + text)
         return corrected, corrected == text
 
-    def analyze_page_scene(self, image_path):
-        return self._vision(image_path, '描述可见画面，以JSON对象返回summary、scene、characters、key_objects。'
-                            '角色名字未知时只写外观，不编造身份。所有描述都是视觉模型推断。', True)
+    def analyze_page_scene(self, image_path, book_text=''):
+        prompt = '描述可见画面，以JSON对象返回summary、scene、characters、key_objects。'
+        if book_text:
+            prompt += ('\n本书原文节选（只用于确认人物姓名，不得据此编造画面里没有的内容）：\n'
+                       + book_text
+                       + '\n若画面人物能与原文姓名对应，characters 的每一项写成 {"名字": "...", "外观": "判断依据"}；'
+                         '对应不上时只写 {"外观": "..."}，不要猜名字。')
+        else:
+            prompt += '角色名字未知时只写外观，不编造身份。'
+        return self._vision(image_path, prompt + ' 所有描述都是视觉模型推断。', True)
 
-    def detect_objects(self, image_path, max_objects=8):
+    def detect_objects(self, image_path, max_objects=8, book_text=''):
         with Image.open(image_path) as image:
             width, height = image.size
+        hint = ''
+        if book_text:
+            hint = ('\n本书原文节选（只用于给人物命名）：\n' + book_text +
+                    '\n人物标签优先使用原文姓名（如“小满”），无法对应时才用外观名称（如“小女孩”）。')
         return self._vision(image_path,
                             f'图片参考尺寸为{width}x{height}像素。检测最多{max_objects}个可见物体。'
                             '严格返回JSON：{"coordinate_space":"pixel","detections":[{"label":"名称",'
-                            '"box":[x1,y1,x2,y2]}]}。box使用该图片绝对像素，不要归一化；没有物体返回空数组。', True)
+                            '"box":[x1,y1,x2,y2]}]}。box使用该图片绝对像素，不要归一化；没有物体返回空数组。'
+                            + hint, True)
 
     @staticmethod
     def _clean_text(text):
@@ -151,6 +163,22 @@ class PDFBookReader:
         if not text.strip():
             raise ValueError('OCR 空响应不能认作确认无字')
         return '' if text.strip() == '[无文字页面]' else text.strip()
+
+    @staticmethod
+    def _book_text(pages, limit=2500):
+        """拼出全书文字节选，作为理解插画时的人名依据；过滤版权水印。"""
+        noise = ('赛题参赛使用', '请勿外传', '人工智能+”创新大赛', '人工智能+"创新大赛')
+        chunks, total = [], 0
+        for page in pages:
+            lines = [line.strip() for line in (page.get('text') or '').splitlines()]
+            clean = '\n'.join(line for line in lines if line and not any(word in line for word in noise))
+            if not clean:
+                continue
+            chunks.append(f"第{page['page_num']}页：{clean[:400]}")
+            total += len(clean)
+            if total > limit:
+                break
+        return '\n'.join(chunks)[:limit]
 
     def read_book(self, pdf_path, output_dir=None, mode='auto', verify_ocr=False,
                   max_pages=100, **unused):
@@ -202,31 +230,41 @@ class PDFBookReader:
                             page['verification_status'] = 'failed'
                 elif mode == 'fast' and verify_ocr:
                     page['verification_status'] = 'skipped_fast'
-                if mode == 'full':
-                    for stage in ('scene', 'objects'):
-                        try:
-                            if stage == 'scene':
-                                scene = self.analyze_page_scene(str(image_path))
-                                if (not isinstance(scene, dict) or 'error' in scene
-                                        or not {'summary', 'scene', 'characters', 'key_objects'}.issubset(scene)
-                                        or not isinstance(scene['summary'], str)
-                                        or not isinstance(scene['scene'], str)
-                                        or not isinstance(scene['characters'], list)
-                                        or not isinstance(scene['key_objects'], list)):
-                                    raise ValueError('场景响应不符合声明的字段契约')
-                                page['scene_analysis'] = {'status': 'ready', 'source': 'vision_model',
-                                                          'model': self.vl_model, 'inferred': True, 'data': scene}
-                            else:
-                                page['objects'] = normalize_objects(self.detect_objects(str(image_path)), width, height, page_id)
-                                page['objects']['source'] = 'vision_model'
-                        except Exception as exc:
-                            code = 'not_configured' if isinstance(exc, ReaderConfigurationError) else 'request_failed'
-                            page['errors'].append({'stage': stage, 'code': code})
-                            page['scene_analysis' if stage == 'scene' else 'objects']['status'] = code
                 if page['errors'] or page['text_status'] == 'needs_ocr':
                     warnings.append({'page_id': page_id, 'text_status': page['text_status'], 'errors': page['errors']})
                 pages.append(page)
                 self._report_progress('read_pages', index + 1, total, f'已处理第 {index + 1} 页')
+        if mode == 'full':
+            # 第二遍：拿到全书文字后再逐页理解画面，才能把插画人物对应到原文姓名
+            book_text = self._book_text(pages)
+            for index, page in enumerate(pages):
+                image_path = output / page['image_path']
+                width = page['image_size']['width']
+                height = page['image_size']['height']
+                for stage in ('scene', 'objects'):
+                    try:
+                        if stage == 'scene':
+                            scene = self.analyze_page_scene(str(image_path), book_text)
+                            if (not isinstance(scene, dict) or 'error' in scene
+                                    or not {'summary', 'scene', 'characters', 'key_objects'}.issubset(scene)
+                                    or not isinstance(scene['summary'], str)
+                                    or not isinstance(scene['scene'], str)
+                                    or not isinstance(scene['characters'], list)
+                                    or not isinstance(scene['key_objects'], list)):
+                                raise ValueError('场景响应不符合声明的字段契约')
+                            page['scene_analysis'] = {'status': 'ready', 'source': 'vision_model',
+                                                      'model': self.vl_model, 'inferred': True, 'data': scene}
+                        else:
+                            page['objects'] = normalize_objects(
+                                self.detect_objects(str(image_path), book_text=book_text),
+                                width, height, page['page_id'])
+                            page['objects']['source'] = 'vision_model'
+                    except Exception as exc:
+                        code = 'not_configured' if isinstance(exc, ReaderConfigurationError) else 'request_failed'
+                        page['errors'].append({'stage': stage, 'code': code})
+                        page['scene_analysis' if stage == 'scene' else 'objects']['status'] = code
+                self._report_progress('read_pages', len(pages), len(pages),
+                                      f'已理解第 {index + 1} 页画面')
         status = 'ready'
         if any(p['text_status'] == 'needs_ocr' for p in pages):
             status = 'needs_ocr'

@@ -47,9 +47,59 @@ from config import *
 import config as app_config
 import local_tts
 import local_asr
+import cloud_asr
+import volc_asr
 
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
+
+
+def _remote_asr(audio_path, language=None):
+    """OpenAI 兼容的音频转写接口（/audio/transcriptions），未配置时返回 None。"""
+    url = os.environ.get('ASR_API_URL', '').strip()
+    if not url:
+        return None
+    key = os.environ.get('ASR_API_KEY', '').strip()
+    model = os.environ.get('ASR_MODEL', 'whisper-1').strip() or 'whisper-1'
+    headers = {'Authorization': f'Bearer {key}'} if key else {}
+    data = {'model': model}
+    if language:
+        data['language'] = language if language != 'zh' else 'zh'
+    with open(audio_path, 'rb') as audio:
+        response = requests.post(url, headers=headers, data=data, timeout=90,
+                                 files={'file': (os.path.basename(audio_path), audio, 'audio/wav')})
+    if response.status_code != 200:
+        raise RuntimeError(f'语音识别接口返回 {response.status_code}')
+    body = response.json()
+    text = body.get('text') or (body.get('data') or {}).get('text') or ''
+    return str(text).strip()
+
+
+def transcribe_audio(audio_path, language=None):
+    """语音识别：优先火山大模型 ASR，其次 AI 接口、云端流式，最后回退本地。"""
+    if volc_asr.configured():
+        try:
+            text = volc_asr.transcribe(audio_path)
+            if text:
+                return local_asr._to_simplified(text)
+        except Exception as e:
+            print(f"火山语音识别失败，尝试其他通道: {e}")
+    try:
+        text = _remote_asr(audio_path, language)
+        if text:
+            return local_asr._to_simplified(text)
+    except Exception as e:
+        print(f"AI 语音识别失败，尝试其他通道: {e}")
+    if cloud_asr.cloud_asr_configured():
+        try:
+            text = cloud_asr.transcribe_file(audio_path)
+            if text:
+                return local_asr._to_simplified(text)
+        except Exception as e:
+            print(f"云端 ASR 失败，尝试本地识别: {e}")
+    if not local_asr.available():
+        raise RuntimeError('语音识别服务未配置，且本地识别模型未安装')
+    return local_asr.transcribe(audio_path, language=language)
 
 app = Flask(__name__, static_folder=None)
 CORS(app)  # 允许跨域请求
@@ -1596,8 +1646,8 @@ def asr_recognize():
         temp_path = f"temp_asr_{int(time.time() * 1000)}.wav"
         audio_file.save(temp_path)
         
-        # 本地 faster-whisper 识别整段音频（首次使用会自动下载模型）
-        text = local_asr.transcribe(temp_path)
+        # 语音识别：优先云端 ASR，未配置时回退本地 faster-whisper
+        text = transcribe_audio(temp_path)
         
         # 删除临时文件
         if os.path.exists(temp_path):
@@ -2638,13 +2688,18 @@ def _book_video_generate(image_path, prompt, output_path, options):
 def _book_answer(question, context, history):
     if not get_capabilities()['answer']:
         raise RuntimeError('问答模型未配置')
+    images = [item.get('image_path') for item in (context or [])
+              if isinstance(item, dict) and item.get('image_path')]
+    if images and os.environ.get('NLU_VISION', 'true').strip().lower() != 'false':
+        return qa_assistant.call_with_images(question, max_length=240, context=context,
+                                             history=history, image_paths=images)
     return qa_assistant.call(question, max_length=240, context=context, history=history)
 
 
 def _book_transcribe(audio_path, language):
     if not get_capabilities()['asr']:
-        raise RuntimeError('本地识别模型尚未安装')
-    return local_asr.transcribe(audio_path, language=language)
+        raise RuntimeError('语音识别服务未配置')
+    return transcribe_audio(audio_path, language=language)
 
 
 book_service = register_book_routes(app, {
