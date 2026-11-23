@@ -18,6 +18,13 @@ class MediaError(RuntimeError):
 
 def _tool(name, explicit=None):
     tool = explicit or os.environ.get(name.upper() + '_PATH') or shutil.which(name)
+    if not tool and name == 'ffmpeg':
+        # 与 config.tool_path 保持一致：未安装系统 ffmpeg 时使用 imageio-ffmpeg 自带的可执行文件
+        try:
+            import imageio_ffmpeg
+            tool = imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            tool = None
     if not tool or not Path(tool).is_file():
         raise MediaError(f'找不到 {name}，请安装 FFmpeg/ffprobe 并加入 PATH')
     return str(tool)

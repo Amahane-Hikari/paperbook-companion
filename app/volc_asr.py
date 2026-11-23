@@ -28,7 +28,16 @@ def _audio_params(path):
     return params
 
 
-def transcribe(audio_path, timeout=20):
+def _default_timeout():
+    try:
+        return max(1.0, float(os.environ.get('VOLC_ASR_TIMEOUT', '20')))
+    except ValueError:
+        return 20.0
+
+
+def transcribe(audio_path, timeout=None):
+    if timeout is None:
+        timeout = _default_timeout()
     key = os.environ.get('VOLC_ASR_API_KEY', '').strip()
     if not key:
         raise RuntimeError('火山语音识别未配置')
@@ -42,6 +51,7 @@ def transcribe(audio_path, timeout=20):
                'audio': {**_audio_params(audio_path), 'data': encoded},
                'request': {'model_name': 'bigmodel', 'enable_itn': True, 'enable_punc': True}}
     submit = requests.post(SUBMIT_URL, headers=headers, json=payload, timeout=60)
+    submit.raise_for_status()
     if submit.headers.get('X-Api-Status-Code') not in (None, '20000000'):
         raise RuntimeError(f"火山识别提交失败: {submit.headers.get('X-Api-Message')}")
     deadline = time.time() + timeout

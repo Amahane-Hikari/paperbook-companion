@@ -65,11 +65,17 @@ class QAAssistant:
                                  'image_url': {'url': f'data:{mime};base64,{encoded}'}})
             except OSError:
                 continue
+        # 与文本问答的预算保持一致（单次 30s、总计 45s），避免长时间占住绘本锁
+        deadline = time.monotonic() + 45
+
         def post(items):
+            remaining = deadline - time.monotonic()
+            if remaining <= 1:
+                raise RuntimeError('问答服务超时')
             payload = {'model': self.model, 'temperature': 0.2, 'max_tokens': 1500,
                        'messages': [{'role': 'system', 'content': system_prompt},
                                     {'role': 'user', 'content': items}]}
-            response = requests.post(self.url, headers=self.headers, json=payload, timeout=120)
+            response = requests.post(self.url, headers=self.headers, json=payload, timeout=min(30, remaining))
             if response.status_code != 200:
                 raise RuntimeError(f'问答服务返回 {response.status_code}')
             body = response.json()

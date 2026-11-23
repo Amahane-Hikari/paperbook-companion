@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import hashlib
 import io
 import json
+import logging
 import math
 import os
 from pathlib import Path, PurePosixPath
@@ -21,6 +22,8 @@ from urllib.parse import quote
 
 from flask import jsonify, request, send_file
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 try:
     from .pdf_book_reader import PDFBookReader, PDFInputError, open_pdf_document
@@ -86,25 +89,31 @@ def _tokens(text):
     return result
 
 
+# 虚词、代词和疑问词几乎每页都有，含这些字的片段不参与同音匹配
+_PINYIN_SKIP_CHARS = frozenset('的了着过在是有没不也都和与跟就还又要会能可这那哪里么什怎吗呢吧啊呀哦我你他她它们个一些')
+
+
 def _pinyin_hits(question, text):
-    """同音容错：把问题里的 2-4 字片段转成拼音，看是否出现在页面原文里。"""
+    """同音容错：把问题里的 2-4 字实词片段转成拼音音节序列，按音节边界匹配页面原文。"""
     try:
         from pypinyin import lazy_pinyin
     except ImportError:
+        logger.warning('未安装 pypinyin，同音容错检索已停用')
         return 0
     clean_question = re.sub(r'[^\u4e00-\u9fff]', '', question or '')
     clean_text = re.sub(r'[^\u4e00-\u9fff]', '', text or '')
     if len(clean_question) < 2 or len(clean_text) < 2:
         return 0
-    target = ''.join(lazy_pinyin(clean_text))
+    syllables = lazy_pinyin(clean_text)
     seen, hits = set(), 0
     for size in (4, 3, 2):
+        windows = {tuple(syllables[i:i + size]) for i in range(len(syllables) - size + 1)}
         for index in range(len(clean_question) - size + 1):
             gram = clean_question[index:index + size]
-            if gram in seen:
+            if gram in seen or _PINYIN_SKIP_CHARS.intersection(gram):
                 continue
             seen.add(gram)
-            if ''.join(lazy_pinyin(gram)) in target:
+            if tuple(lazy_pinyin(gram)) in windows:
                 hits += 1
     return hits
 
@@ -562,17 +571,18 @@ class BookPipelineService:
                     if hits:
                         ranked.append((hits, page))
             ranked.sort(key=lambda row: (-row[0], row[1]['page_num']))
-            citations = []
-            for _, page in ranked[:3]:
+            def make_cite(page, excerpt_len):
                 timing = next((p for p in timeline if p['page_id'] == page['page_id']), None)
-                cite = {'page_id': page['page_id'], 'page_num': page['page_num'], 'excerpt': page['text'][:1200],
+                cite = {'page_id': page['page_id'], 'page_num': page['page_num'], 'excerpt': page['text'][:excerpt_len],
                         'start': None, 'end': None, 'time_status': 'unavailable_until_export'}
                 if timing:
                     cite.update(time_status='export_timeline', start=timing['book_start'], end=timing['book_end'],
                                 book_start=timing['book_start'], book_end=timing['book_end'],
                                 video_start=timing.get('video_start', timing['book_start']),
                                 video_end=timing.get('video_end', timing['book_end']))
-                citations.append(cite)
+                return cite
+
+            citations = [make_cite(page, 1200) for _, page in ranked[:3]]
             # 传给问答适配器的证据：附带原页图片路径，供多模态模型看图
             evidence = [dict(cite) for cite in citations]
             for cite, (_, page) in zip(evidence, ranked[:3]):
@@ -592,9 +602,7 @@ class BookPipelineService:
                         break
                     if page['page_id'] in cited_ids or not page.get('text', '').strip():
                         continue
-                    anchor = {'page_id': page['page_id'], 'page_num': page['page_num'],
-                              'excerpt': page['text'][:600], 'start': None, 'end': None,
-                              'time_status': 'unavailable_until_export'}
+                    anchor = make_cite(page, 600)
                     if page.get('image_path'):
                         try:
                             anchor['image_path'] = str(self.asset(book_id, page['image_path']))

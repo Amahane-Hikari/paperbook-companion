@@ -1645,13 +1645,12 @@ def asr_recognize():
         # 保存临时文件
         temp_path = f"temp_asr_{int(time.time() * 1000)}.wav"
         audio_file.save(temp_path)
-        
-        # 语音识别：优先云端 ASR，未配置时回退本地 faster-whisper
-        text = transcribe_audio(temp_path)
-        
-        # 删除临时文件
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        try:
+            # 语音识别：优先云端 ASR，未配置时回退本地 faster-whisper
+            text = transcribe_audio(temp_path)
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
         
         return jsonify({
             'success': True,
@@ -2690,9 +2689,13 @@ def _book_answer(question, context, history):
         raise RuntimeError('问答模型未配置')
     images = [item.get('image_path') for item in (context or [])
               if isinstance(item, dict) and item.get('image_path')]
-    if images and os.environ.get('NLU_VISION', 'true').strip().lower() != 'false':
-        return qa_assistant.call_with_images(question, max_length=240, context=context,
-                                             history=history, image_paths=images)
+    # 默认关闭：只有显式声明 NLU_MODEL 支持图片输入时才发送页面插画
+    if images and os.environ.get('NLU_VISION', 'false').strip().lower() in ('1', 'true', 'yes', 'on'):
+        try:
+            return qa_assistant.call_with_images(question, max_length=240, context=context,
+                                                 history=history, image_paths=images)
+        except (RuntimeError, requests.RequestException) as exc:
+            print(f"Vision QA failed, falling back to text QA: {exc}")
     return qa_assistant.call(question, max_length=240, context=context, history=history)
 
 

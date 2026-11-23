@@ -36,12 +36,12 @@ class ControlledReader(PDFBookReader):
         self.calls.append(('verify', Path(path).stem))
         return text, True
 
-    def analyze_page_scene(self, path):
+    def analyze_page_scene(self, path, book_text=''):
         self.calls.append(('scene', Path(path).stem))
         return {'summary': 'Visible shapes, inferred by the test model', 'scene': 'forest',
                 'characters': [], 'key_objects': []}
 
-    def detect_objects(self, path, max_objects=8):
+    def detect_objects(self, path, max_objects=8, book_text=''):
         self.calls.append(('objects', Path(path).stem))
         return {'coordinate_space': 'pixel', 'detections': [{'label': 'shape', 'box': [1, 2, 50, 60]}]}
 

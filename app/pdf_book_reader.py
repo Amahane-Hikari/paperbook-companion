@@ -188,7 +188,7 @@ class PDFBookReader:
             raise ValueError('必须指定书本输出目录')
         output = Path(output_dir)
         (output / 'images').mkdir(parents=True, exist_ok=True)
-        pages, warnings = [], []
+        pages = []
         with open_pdf_document(pdf_path, max_pages) as document:
             total = document.page_count
             for index, pdf_page in enumerate(document):
@@ -230,8 +230,6 @@ class PDFBookReader:
                             page['verification_status'] = 'failed'
                 elif mode == 'fast' and verify_ocr:
                     page['verification_status'] = 'skipped_fast'
-                if page['errors'] or page['text_status'] == 'needs_ocr':
-                    warnings.append({'page_id': page_id, 'text_status': page['text_status'], 'errors': page['errors']})
                 pages.append(page)
                 self._report_progress('read_pages', index + 1, total, f'已处理第 {index + 1} 页')
         if mode == 'full':
@@ -265,6 +263,9 @@ class PDFBookReader:
                         page['scene_analysis' if stage == 'scene' else 'objects']['status'] = code
                 self._report_progress('read_pages', len(pages), len(pages),
                                       f'已理解第 {index + 1} 页画面')
+        # 两遍都跑完后再汇总警告，画面理解阶段的失败也要让整本书标记为 degraded
+        warnings = [{'page_id': p['page_id'], 'text_status': p['text_status'], 'errors': p['errors']}
+                    for p in pages if p['errors'] or p['text_status'] == 'needs_ocr']
         status = 'ready'
         if any(p['text_status'] == 'needs_ocr' for p in pages):
             status = 'needs_ocr'
