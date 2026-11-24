@@ -12,6 +12,27 @@ _model = None
 _model_lock = threading.Lock()
 
 
+def _model_candidate():
+    """返回本地模型路径（若配置的是目录则展开为绝对路径）。"""
+    model_size = os.environ.get("WHISPER_MODEL", "models/faster-whisper-small")
+    candidate = os.path.expanduser(model_size)
+    if not os.path.isabs(candidate):
+        candidate = os.path.join(os.path.dirname(os.path.abspath(__file__)), candidate)
+    return candidate
+
+
+def available() -> bool:
+    """本地识别是否可用：依赖已安装，且模型已就位或允许自动下载。"""
+    try:
+        import importlib.util
+        if importlib.util.find_spec("faster_whisper") is None:
+            return False
+    except (ImportError, ValueError):
+        return False
+    return os.path.isdir(_model_candidate()) or os.environ.get(
+        "WHISPER_ALLOW_DOWNLOAD", "false").lower() == "true"
+
+
 def _get_model():
     global _model
     if _model is not None:
@@ -52,6 +73,15 @@ def _load_wav_16k(path: str) -> np.ndarray:
     return audio
 
 
+def _to_simplified(text: str) -> str:
+    """Whisper 的中文常输出繁体，统一转成简体，避免问答检索匹配不上。"""
+    try:
+        import zhconv
+        return zhconv.convert(text, 'zh-cn')
+    except ImportError:
+        return text
+
+
 def transcribe(audio_path: str, language: str = None) -> str:
     """识别音频文件，返回纯文本。"""
     model = _get_model()
@@ -62,6 +92,8 @@ def transcribe(audio_path: str, language: str = None) -> str:
     except wave.Error:
         # 非 WAV 时退回让 faster-whisper 自行解码
         audio = audio_path
-    segments, _info = model.transcribe(audio, language=language or None,
-                                       beam_size=5, vad_filter=True)
-    return "".join(segment.text for segment in segments).strip()
+    options = {'language': language or None, 'beam_size': 5, 'vad_filter': True}
+    if (language or '').lower().startswith('zh'):
+        options['initial_prompt'] = '以下是简体中文普通话。'
+    segments, _info = model.transcribe(audio, **options)
+    return _to_simplified("".join(segment.text for segment in segments).strip())
