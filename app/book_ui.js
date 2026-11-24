@@ -57,10 +57,12 @@
     if (filmReady && Number.isFinite(moment.book_start)) return { mode: 'film', time: Math.max(0, moment.book_start) };
     return { mode: 'page', pageId: moment.page_id, time: Number.isFinite(moment.start) ? Math.max(0, moment.start) : null };
   }
+  /* Frames within 0.25 s look alike to the vision model; the server snaps to the same bucket. */
+  function frameBucket(time) { return Math.floor(Math.max(0, time) * 4 + 1e-6) / 4; }
   /* A paused frame is identified by its media and clock; epoch is excluded so prefetches stay reusable. */
   function frameKey(ctx) {
     if (!ctx || !ctx.bookId || !ctx.pageId) return '';
-    return [ctx.bookId, ctx.source, ctx.mediaPath, ctx.pageId, isMotion(ctx.source) && Number.isFinite(ctx.frameTime) ? ctx.frameTime.toFixed(3) : '0'].join('|');
+    return [ctx.bookId, ctx.source, ctx.mediaPath, ctx.pageId, isMotion(ctx.source) && Number.isFinite(ctx.frameTime) ? frameBucket(ctx.frameTime).toFixed(2) : '0'].join('|');
   }
   /* Vision labels arrive as "中文名称<English>"; show both, speak the book's language. */
   function splitLabel(label) {
@@ -96,7 +98,7 @@
     document.documentElement.dataset.bookReaderReady = 'true';
     const $ = id => document.getElementById(id);
     const state = { bookId: '', book: null, pageIndex: 0, epoch: 0, selection: 0, mediaKey: '', source: 'image', prefer: 'film', caps: {}, jobs: new Map(), sessions: {}, sessionId: '', asking: new Set(), ignorePause: new WeakSet(), recognition: null, highlight: null, speech: null, lastSpoken: null, imageRef: null, audioRef: null, recording: null,
-      timeline: null, timelineURL: '', filmURL: '', detections: new Map(), prefetch: null, prefetchTimer: 0, latency: [], pendingSeek: null };
+      timeline: null, timelineURL: '', filmURL: '', detections: new Map(), prefetch: null, prefetchTimer: 0, latency: [], pendingSeek: null, anchors: new Map(), spoken: new Map() };
     const sourceNames = { image: '原图', video: '页动画', film: '整本影片' };
     const momentIcons = { speech: '🔊', text: '📄', visual: '🖼' };
     const image = $('pageImage'), video = $('pageVideo'), audio = $('pageAudio');
@@ -321,6 +323,7 @@
         if (audio.dataset.path !== audioURL) { if (audioURL) audio.src = audioURL; else audio.removeAttribute('src'); audio.dataset.path = audioURL; audio.load(); }
         renderTicks(); schedulePrefetch();
       }
+      ensureAnchor();
       image.alt = '第 ' + current.page_num + ' 页绘本原图';
       $('mediaStage').dataset.source = source; $('mediaStage').setAttribute('aria-label', sourceNames[source] + ' · 第 ' + current.page_num + ' 页，点一点认识里面的东西');
       $('stageEmpty').hidden = true;
@@ -374,7 +377,7 @@
       if (!bookId || !idPattern.test(bookId)) return;
       state.selection++; stopRecording(true); pausePage(); invalidate('已切换绘本。'); clearAttachments();
       state.bookId = bookId; state.book = null; state.pageIndex = 0; state.mediaKey = ''; state.prefer = 'film';
-      state.timeline = null; state.timelineURL = ''; state.filmURL = ''; state.detections.clear(); cancelPrefetch(); $('momentResults').replaceChildren();
+      state.timeline = null; state.timelineURL = ''; state.filmURL = ''; state.detections.clear(); state.anchors.clear(); state.spoken.clear(); cancelPrefetch(); $('momentResults').replaceChildren();
       state.sessionId = state.sessions[bookId] || ''; state.lastSpoken = null; $('replaySpoken').hidden = true;
       $('chatMessages').replaceChildren(node('p', '你想知道故事里的什么呢？', 'empty'));
       storeIds(); $('bookSelect').value = bookId; renderPages(); renderPage(true); renderTasks();
@@ -438,15 +441,35 @@
       const label = node('span', splitLabel(highlight.detection.label).display, 'object-label'); if (display.top < 35) { label.style.bottom = 'auto'; label.style.top = '3px'; }
       box.append(label); $('objectOverlay').append(box);
     }
+    /* One synthesis per wording: taps reuse what was warmed up, and the server caches the file too. */
+    function speakURL(text, bookId) {
+      const voice = $('voice').value, language = state.book && state.book.language || 'zh', clean = String(text).slice(0, 2000), key = [bookId, language, voice, clean].join('|');
+      let known = state.spoken.get(key);
+      if (!known) {
+        known = post('/api/books/' + bookId + '/speak', { text: clean, voice, language }).then(result => { const url = safeAssetURL(result.audio_url, bookId); if (!url) throw new Error('朗读资源暂不可用。'); return url; });
+        known.catch(() => { if (state.spoken.get(key) === known) state.spoken.delete(key); });
+        state.spoken.set(key, known); if (state.spoken.size > 200) state.spoken.delete(state.spoken.keys().next().value);
+      }
+      return known;
+    }
+    function spokenName(label) { const name = splitLabel(label); return state.book && state.book.language === 'en' ? (name.en || name.zh) : name.zh; }
+    /* Quietly synthesize the names of what was just recognized so the next tap speaks at once. */
+    function warmSpeech(entry, bookId) {
+      if (state.caps.tts !== true || !entry || !entry.objects) return;
+      const seen = new Set(), selection = state.selection;
+      (entry.objects.detections || []).slice(0, 8).forEach(item => {
+        const text = spokenName(item.label); if (!text || seen.has(text)) return; seen.add(text);
+        state.warmChain = (state.warmChain || Promise.resolve()).then(() => state.selection === selection && state.bookId === bookId ? speakURL(text, bookId) : null).catch(() => {});
+      });
+    }
     async function playSpoken(text, snapshot) {
       if (state.caps.tts !== true) { $('recognitionStatus').textContent = '朗读尚未准备好，文字结果已保留。'; return; }
       const bookId = snapshot.bookId; let activeSpeech = null;
       const controller = new AbortController(), pending = { cancel() { controller.abort(); } };
       state.speech = pending; $('cancelInteraction').hidden = false;
       try {
-        const result = await post('/api/books/' + bookId + '/speak', { text: String(text).slice(0, 2000), voice: $('voice').value, language: state.book && state.book.language || 'zh' }, controller.signal);
+        const url = await speakURL(text, bookId);
         if (!sameContext(snapshot, context())) return;
-        const url = safeAssetURL(result.audio_url, bookId); if (!url) throw new Error('朗读资源暂不可用。');
         state.lastSpoken = { url, bookId, snapshot }; $('replaySpoken').hidden = false;
         const player = new Audio(url); let cancelled = false, settle;
         const ended = new Promise((resolve, reject) => { settle = resolve; player.onended = () => resolve(); player.onerror = () => reject(new Error('朗读音频没有加载成功，请点击重新播放。')); });
@@ -477,8 +500,27 @@
         if (result.book_id !== ctx.bookId || result.page_id !== ctx.pageId || !validContract(result.objects)) throw new Error('这次识别没有返回可用的位置，请重试。');
         const entry = { objects: result.objects, image_ref: result.image_ref, image_url: result.image_url, server_ms: result.timing_ms, network_ms: now() - started, serverCached: !!result.cached };
         state.detections.set(key, entry); if (state.detections.size > 80) state.detections.delete(state.detections.keys().next().value);
+        warmSpeech(entry, ctx.bookId);
         return entry;
       });
+    }
+    /* The page's still picture is recognized once (and cached on disk), even while the film plays.
+       A tap on moving video is answered from it at once, then corrected against the exact frame. */
+    function ensureAnchor() {
+      const current = page(); if (!current || !state.bookId) return;
+      const stored = current.objects && current.objects.detections && current.objects.detections.length > 0;
+      if (state.caps.vision !== true && !stored) return;
+      const bookId = state.bookId, pageId = current.page_id, key = bookId + '|' + pageId; if (state.anchors.has(key)) return;
+      const slot = { entry: null };
+      slot.promise = post('/api/books/' + bookId + '/recognize', { page_id: pageId, source: 'image', frame_time: 0, request_id: 'anchor-' + Date.now() }).then(result => {
+        if (result.book_id !== bookId || result.page_id !== pageId || !validContract(result.objects)) throw new Error('anchor');
+        slot.entry = { objects: result.objects, image_ref: result.image_ref, image_url: result.image_url }; warmSpeech(slot.entry, bookId); return slot.entry;
+      });
+      slot.promise.catch(() => { if (state.anchors.get(key) === slot) state.anchors.delete(key); });
+      state.anchors.set(key, slot);
+    }
+    function hitAt(entry, point, width, height) {
+      const contract = entry.objects; return hitDetection(contract.detections, { x: point.x / width * contract.reference_width, y: point.y / height * contract.reference_height });
     }
     function cancelPrefetch() {
       clearTimeout(state.prefetchTimer); state.prefetchTimer = 0;
@@ -510,6 +552,21 @@
       state.recognition = { controller, snapshot }; $('cancelInteraction').hidden = false; $('recognitionStatus').textContent = '正在看看你点到了什么…';
       showRipple(event);
       try {
+        const anchor = isMotion(snapshot.source) ? state.anchors.get(snapshot.bookId + '|' + snapshot.pageId) : null;
+        const quick = anchor && anchor.entry ? hitAt(anchor.entry, point, width, height) : null;
+        if (quick) {
+          // Answer from the page picture now; the exact frame is checked in the background.
+          const name = splitLabel(quick.label), english = state.book && state.book.language === 'en';
+          recordLatency('recognize', now() - tapped, '原图快速识别');
+          state.highlight = { detection: quick, contract: anchor.entry.objects, snapshot }; drawHighlight(); $('recognitionStatus').textContent = '你点到了：' + name.display;
+          fetchDetections(snapshot, controller.signal).then(entry => {
+            if (!sameContext(snapshot, context())) return;
+            const exact = hitAt(entry, point, width, height); recordLatency('recognize', now() - tapped, '逐帧核对');
+            if (exact && exact.label !== quick.label) { state.highlight = { detection: exact, contract: entry.objects, snapshot }; drawHighlight(); $('recognitionStatus').textContent = '按当前画面校正：' + splitLabel(exact.label).display; }
+          }).catch(() => {}).finally(() => { if (state.recognition && state.recognition.snapshot === snapshot) state.recognition = null; });
+          await playSpoken(english ? (name.en || name.zh) : name.zh, snapshot);
+          return;
+        }
         const entry = await fetchDetections(snapshot, controller.signal);
         const result = { ...entry, book_id: snapshot.bookId, page_id: snapshot.pageId, request_id: snapshot.requestId };
         if (!responseMatches(snapshot, context(), result)) return;

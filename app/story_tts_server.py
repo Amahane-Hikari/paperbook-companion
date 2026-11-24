@@ -2740,6 +2740,13 @@ def book_ui_styles():
     return send_from_directory(os.path.dirname(os.path.abspath(__file__)), 'book_reader.css')
 
 
+FRAME_BUCKET = 4  # frames within 0.25 s share one recognition; the client keys its cache the same way
+
+
+def _snap_frame_time(value):
+    return math.floor(value * FRAME_BUCKET + 1e-6) / FRAME_BUCKET
+
+
 @app.post('/api/books/<book_id>/recognize')
 def book_recognize(book_id):
     value = request.get_json(silent=True) or {}
@@ -2773,6 +2780,10 @@ def book_recognize(book_id):
             raise PipelineError('影片时间超出整片范围')
         page_id = row['page_id']
         page = next(item for item in manifest['pages'] if item['page_id'] == page_id)
+        # Snap to the shared frame bucket, but never back across the page boundary.
+        frame_time = max(_snap_frame_time(frame_time), row.get('video_start', row['book_start']))
+    elif source == 'video':
+        frame_time = _snap_frame_time(frame_time)
     image_ref = page['image_path']
     image_path = book_service.asset(book_id, image_ref)
     cached_page = source == 'image' and page.get('objects', {}).get('detections')
@@ -2851,14 +2862,29 @@ def book_speak(book_id):
         raise PipelineError('朗读依赖未就绪', 503)
     directory = book_service.book_dir(book_id) / 'attachments' / 'spoken'
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / (uuid.uuid4().hex + '.wav')
-    try:
-        _book_synthesize(text.strip(), voice, str(path), value.get('language', 'zh'))
-    except Exception as exc:
-        raise PipelineError('朗读生成失败，请检查网络服务或重试', 502) from exc
+    language = 'en' if value.get('language') == 'en' else 'zh'
+    # Short labels repeat constantly (every tap on the same object); synthesize each wording once.
+    digest = hashlib.sha256(f'{text.strip()}|{voice}|{language}'.encode()).hexdigest()[:24]
+    path = directory / f'say-{digest}.wav'
+    cached = False
+    if path.is_file():
+        try:
+            duration = wav_duration(path)
+            cached = duration > 0
+        except Exception:
+            cached = False
+    if not cached:
+        temporary = directory / f'say-{digest}.{uuid.uuid4().hex[:8]}.wav'
+        try:
+            _book_synthesize(text.strip(), voice, str(temporary), language)
+            duration = wav_duration(temporary)
+            os.replace(temporary, path)
+        except Exception as exc:
+            temporary.unlink(missing_ok=True)
+            raise PipelineError('朗读生成失败，请检查网络服务或重试', 502) from exc
     relative = path.relative_to(book_service.book_dir(book_id)).as_posix()
     return jsonify(success=True, audio_ref=relative, audio_url=book_service.asset_url(book_id, relative),
-                   duration=wav_duration(path))
+                   duration=duration, cached=cached)
 
 
 def _print_service_urls(host, port):

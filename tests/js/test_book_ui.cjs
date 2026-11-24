@@ -76,7 +76,7 @@ test('moments play on the film clock only when the film exists', () => {
 test('frame keys ignore epoch but change with media, page and frame time', () => {
   const ctx = { bookId: 'b', pageId: 'p0001', source: 'film', mediaPath: 'film:/x.mp4', frameTime: 1.25, epoch: 1 };
   assert.equal(frameKey(ctx), frameKey({ ...ctx, epoch: 9 }));
-  assert.notEqual(frameKey(ctx), frameKey({ ...ctx, frameTime: 1.3 }));
+  assert.notEqual(frameKey(ctx), frameKey({ ...ctx, frameTime: 1.6 }));
   assert.notEqual(frameKey(ctx), frameKey({ ...ctx, pageId: 'p0002' }));
   assert.equal(frameKey({ ...ctx, source: 'image', frameTime: 4 }), frameKey({ ...ctx, source: 'image', frameTime: 0 }));
   assert.equal(frameKey({ ...ctx, pageId: '' }), '');

@@ -262,6 +262,14 @@ def test_recognition_contract_and_speak_use_real_book_assets(server, monkeypatch
     spoken = client.post(f'/api/books/{book_id}/speak', json={'text': 'rabbit', 'voice': 'xiaoyuan'})
     assert spoken.status_code == 200 and spoken.get_json()['duration'] == pytest.approx(.2)
     assert client.get(spoken.get_json()['audio_url']).status_code == 200
+    # The same wording is synthesized once; a repeat tap reuses the file.
+    calls = []
+    original_synth = server.local_tts.synthesize
+    monkeypatch.setattr(server.local_tts, 'synthesize', lambda *args, **kwargs: calls.append(1) or original_synth(*args, **kwargs))
+    again = client.post(f'/api/books/{book_id}/speak', json={'text': 'rabbit', 'voice': 'xiaoyuan'}).get_json()
+    assert again['cached'] is True and again['audio_url'] == spoken.get_json()['audio_url'] and not calls
+    other = client.post(f'/api/books/{book_id}/speak', json={'text': 'fox', 'voice': 'xiaoyuan'}).get_json()
+    assert other['cached'] is False and len(calls) == 1
 
 
 def test_legacy_force_reaches_generator_and_cache_tracks_input(server, monkeypatch, tmp_path):
