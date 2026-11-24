@@ -57,6 +57,16 @@
     if (filmReady && Number.isFinite(moment.book_start)) return { mode: 'film', time: Math.max(0, moment.book_start) };
     return { mode: 'page', pageId: moment.page_id, time: Number.isFinite(moment.start) ? Math.max(0, moment.start) : null };
   }
+  /* Two detections are the same object when their boxes overlap, however the model happened to word the label. */
+  function sameObject(a, ca, b, cb) {
+    const norm = (box, c) => [box[0] / c.reference_width, box[1] / c.reference_height, box[2] / c.reference_width, box[3] / c.reference_height];
+    if (!a || !b || !Array.isArray(a.box) || !Array.isArray(b.box) || !ca || !cb) return false;
+    const p = norm(a.box, ca), q = norm(b.box, cb);
+    const w = Math.min(p[2], q[2]) - Math.max(p[0], q[0]), h = Math.min(p[3], q[3]) - Math.max(p[1], q[1]);
+    if (w <= 0 || h <= 0) return false;
+    const inter = w * h, union = (p[2] - p[0]) * (p[3] - p[1]) + (q[2] - q[0]) * (q[3] - q[1]) - inter;
+    return union > 0 && inter / union >= .5;
+  }
   /* Frames within 0.25 s look alike to the vision model; the server snaps to the same bucket. */
   function frameBucket(time) { return Math.floor(Math.max(0, time) * 4 + 1e-6) / 4; }
   /* A paused frame is identified by its media and clock; epoch is excluded so prefetches stay reusable. */
@@ -559,11 +569,13 @@
           const name = splitLabel(quick.label), english = state.book && state.book.language === 'en';
           recordLatency('recognize', now() - tapped, '原图快速识别');
           state.highlight = { detection: quick, contract: anchor.entry.objects, snapshot }; drawHighlight(); $('recognitionStatus').textContent = '你点到了：' + name.display;
+          // The answer is already on screen: the background check must not look like an unfinished tap when playback resumes.
+          state.recognition = null;
           fetchDetections(snapshot, controller.signal).then(entry => {
             if (!sameContext(snapshot, context())) return;
             const exact = hitAt(entry, point, width, height); recordLatency('recognize', now() - tapped, '逐帧核对');
-            if (exact && exact.label !== quick.label) { state.highlight = { detection: exact, contract: entry.objects, snapshot }; drawHighlight(); $('recognitionStatus').textContent = '按当前画面校正：' + splitLabel(exact.label).display; }
-          }).catch(() => {}).finally(() => { if (state.recognition && state.recognition.snapshot === snapshot) state.recognition = null; });
+            if (exact && !sameObject(quick, anchor.entry.objects, exact, entry.objects)) { state.highlight = { detection: exact, contract: entry.objects, snapshot }; drawHighlight(); $('recognitionStatus').textContent = '按当前画面校正：' + splitLabel(exact.label).display; }
+          }).catch(() => {});
           await playSpoken(english ? (name.en || name.zh) : name.zh, snapshot);
           return;
         }
@@ -829,6 +841,6 @@
       } catch (error) { notice(error.message, true); }
     })();
   }
-  return { containRect, mapClickToSource, boxToDisplay, hitDetection, sameContext, responseMatches, shouldResume, formatTime,
+  return { sameObject, containRect, mapClickToSource, boxToDisplay, hitDetection, sameContext, responseMatches, shouldResume, formatTime,
     pageAtTime, sentenceAt, momentTarget, frameKey, splitLabel, mediaReadiness, median, start };
 });
