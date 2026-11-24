@@ -544,6 +544,8 @@
         const current = page(); if (!current || isPlaying() || state.recording || state.recognition || !canRecognize(current)) return;
         const { width, height } = shownSize(); if (!width || !height) return;
         const ctx = context(), key = frameKey(ctx); if (!key || state.detections.has(key) || (state.prefetch && state.prefetch.key === key)) return;
+        /* A film parked on its final instant has no frame left to read; asking would only log a 400. */
+        if (state.source === 'film' && Number.isFinite(video.duration) && ctx.frameTime >= video.duration - 0.05) return;
         if (state.prefetch) state.prefetch.controller.abort();
         const controller = new AbortController(), entry = { key, controller };
         entry.promise = fetchDetections(ctx, controller.signal).finally(() => { if (state.prefetch === entry) state.prefetch = null; });
