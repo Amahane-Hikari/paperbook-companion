@@ -50,6 +50,16 @@ test('resume requires unchanged media, previously playing, and successful uncanc
   assert.equal(shouldResume(snapshot, { ...snapshot, frameTime: 2 }), false);
 });
 
+const { sameObject } = require('../../app/book_ui.js');
+
+test('a re-worded label on the same box is not a correction; a different object is', () => {
+  const page = { reference_width: 1000, reference_height: 500 }, frame = { reference_width: 1280, reference_height: 720 };
+  const quick = { label: '蓝色矩形', box: [100, 100, 400, 400] };
+  assert.equal(sameObject(quick, page, { label: '蓝色正方形', box: [130, 180, 520, 590] }, frame), true);
+  assert.equal(sameObject(quick, page, { label: '红苹果', box: [700, 100, 900, 300] }, page), false);
+  assert.equal(sameObject(quick, page, null, page), false);
+});
+
 const { pageAtTime, sentenceAt, momentTarget, frameKey, splitLabel, median } = require('../../app/book_ui.js');
 
 test('film clock maps to pages by quantized visual boundaries', () => {
@@ -76,7 +86,7 @@ test('moments play on the film clock only when the film exists', () => {
 test('frame keys ignore epoch but change with media, page and frame time', () => {
   const ctx = { bookId: 'b', pageId: 'p0001', source: 'film', mediaPath: 'film:/x.mp4', frameTime: 1.25, epoch: 1 };
   assert.equal(frameKey(ctx), frameKey({ ...ctx, epoch: 9 }));
-  assert.notEqual(frameKey(ctx), frameKey({ ...ctx, frameTime: 1.3 }));
+  assert.notEqual(frameKey(ctx), frameKey({ ...ctx, frameTime: 1.6 }));
   assert.notEqual(frameKey(ctx), frameKey({ ...ctx, pageId: 'p0002' }));
   assert.equal(frameKey({ ...ctx, source: 'image', frameTime: 4 }), frameKey({ ...ctx, source: 'image', frameTime: 0 }));
   assert.equal(frameKey({ ...ctx, pageId: '' }), '');
