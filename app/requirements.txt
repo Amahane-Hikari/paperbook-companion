@@ -13,5 +13,8 @@ sseclient-py
 edge-tts
 imageio-ffmpeg
 faster-whisper
+# 问答同音容错检索、识别结果繁转简
+pypinyin
+zhconv
 # 可选：OSS 上传功能（generate_video.py）
 oss2

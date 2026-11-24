@@ -112,7 +112,18 @@ def tool_path(name):
     configured = os.environ.get(name.upper() + '_PATH', '')
     if configured:
         return configured if os.path.isfile(configured) else None
-    return shutil.which(name)
+    found = shutil.which(name)
+    if found:
+        return found
+    if name == 'ffmpeg':
+        # 未安装系统 ffmpeg 时，使用 imageio-ffmpeg 自带的可执行文件
+        try:
+            import imageio_ffmpeg
+            exe = imageio_ffmpeg.get_ffmpeg_exe()
+            return exe if exe and os.path.isfile(exe) else None
+        except Exception:
+            return None
+    return None
 
 
 def get_capabilities():
@@ -122,6 +133,9 @@ def get_capabilities():
     if not os.path.isabs(model_path):
         model_path = os.path.join(_BASE_DIR, model_path)
     asr_ready = os.path.isdir(model_path) or os.environ.get('WHISPER_ALLOW_DOWNLOAD', 'false').lower() == 'true'
+    cloud_asr_ready = bool(os.environ.get('ASR_WS_SERVER_URL', '').strip())
+    http_asr_ready = bool(os.environ.get('VOLC_ASR_API_KEY', '').strip()
+                          or os.environ.get('ASR_API_URL', '').strip())
     return {
         'story': service_configured(simple_story_writer_url, simple_story_writer_api_key, simple_story_writer_model),
         'answer': service_configured(nlu_url, nlu_api_key, nlu_model),
@@ -131,7 +145,7 @@ def get_capabilities():
         'sfx': service_configured(text2audio_url, text2audio_api_key, text2audio_model),
         'video': service_configured(image2video_url, image2video_api_key, image2video_model),
         'tts': _module_present('edge_tts') and bool(tool_path('ffmpeg')),
-        'asr': _module_present('faster_whisper') and asr_ready,
+        'asr': http_asr_ready or cloud_asr_ready or (_module_present('faster_whisper') and asr_ready),
         'pdf': _module_present('pymupdf'),
         'ffmpeg': bool(tool_path('ffmpeg')), 'ffprobe': bool(tool_path('ffprobe')),
     }

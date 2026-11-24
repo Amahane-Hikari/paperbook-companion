@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import hashlib
 import io
 import json
+import logging
 import math
 import os
 from pathlib import Path, PurePosixPath
@@ -22,6 +23,8 @@ from urllib.parse import quote
 
 from flask import jsonify, request, send_file
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 try:
     from .pdf_book_reader import PDFBookReader, PDFInputError, open_pdf_document
@@ -211,6 +214,35 @@ def search_moments(manifest, timeline, queries, page_id=None, limit=5):
                                          'inferred': True}))
     rows.sort(key=lambda item: (-item[0], item[1]['page_num'], item[1]['start'] or 0))
     return [dict(item, score=round(score, 3)) for score, item in rows[:limit]]
+
+
+# 虚词、代词和疑问词几乎每页都有，含这些字的片段不参与同音匹配
+_PINYIN_SKIP_CHARS = frozenset('的了着过在是有没不也都和与跟就还又要会能可这那哪里么什怎吗呢吧啊呀哦我你他她它们个一些')
+
+
+def _pinyin_hits(question, text):
+    """同音容错：把问题里的 2-4 字实词片段转成拼音音节序列，按音节边界匹配页面原文。"""
+    try:
+        from pypinyin import lazy_pinyin
+    except ImportError:
+        logger.warning('未安装 pypinyin，同音容错检索已停用')
+        return 0
+    clean_question = re.sub(r'[^\u4e00-\u9fff]', '', question or '')
+    clean_text = re.sub(r'[^\u4e00-\u9fff]', '', text or '')
+    if len(clean_question) < 2 or len(clean_text) < 2:
+        return 0
+    syllables = lazy_pinyin(clean_text)
+    seen, hits = set(), 0
+    for size in (4, 3, 2):
+        windows = {tuple(syllables[i:i + size]) for i in range(len(syllables) - size + 1)}
+        for index in range(len(clean_question) - size + 1):
+            gram = clean_question[index:index + size]
+            if gram in seen or _PINYIN_SKIP_CHARS.intersection(gram):
+                continue
+            seen.add(gram)
+            if tuple(lazy_pinyin(gram)) in windows:
+                hits += 1
+    return hits
 
 
 class BookPipelineService:
@@ -677,11 +709,17 @@ class BookPipelineService:
                 if score:
                     ranked.append((score, page))
                     visual_by_page[page['page_id']] = visual
+            if not ranked:
+                # 语音识别常把“积木”听成“鸡目”，用拼音做同音容错检索
+                for page in pages:
+                    text = page.get('text', '').strip()
+                    hits = _pinyin_hits(question, text) if text else 0
+                    if hits:
+                        ranked.append((hits, page))
             ranked.sort(key=lambda row: (-row[0], row[1]['page_num']))
-            citations = []
-            for _, page in ranked[:3]:
+            def make_cite(page, excerpt_len):
                 timing = next((p for p in timeline if p['page_id'] == page['page_id']), None)
-                cite = {'page_id': page['page_id'], 'page_num': page['page_num'], 'excerpt': page.get('text', '')[:1200],
+                cite = {'page_id': page['page_id'], 'page_num': page['page_num'], 'excerpt': page.get('text', '')[:excerpt_len],
                         'start': None, 'end': None, 'time_status': 'unavailable_until_export'}
                 if visual_by_page.get(page['page_id']):
                     cite['visual'] = {'inferred': True, 'terms': visual_by_page[page['page_id']][:8]}
@@ -690,18 +728,45 @@ class BookPipelineService:
                                 book_start=timing['book_start'], book_end=timing['book_end'],
                                 video_start=timing.get('video_start', timing['book_start']),
                                 video_end=timing.get('video_end', timing['book_end']))
-                citations.append(cite)
+                return cite
+
+            citations = [make_cite(page, 1200) for _, page in ranked[:3]]
+            # 传给问答适配器的证据：附带原页图片路径，供多模态模型看图
+            evidence = [dict(cite) for cite in citations]
+            for cite, (_, page) in zip(evidence, ranked[:3]):
+                if page.get('image_path'):
+                    try:
+                        cite['image_path'] = str(self.asset(book_id, page['image_path']))
+                    except (OSError, PipelineError):
+                        pass
             if not citations:
                 answer, source = '我不知道；当前绘本原文中没有找到足够依据。', 'no_evidence'
-            elif self.adapters.get('answer') and self.adapters.get('capabilities', lambda: {'answer': True})().get('answer', False):
+            else:
+                # 角色锚点：前两页通常交代人物姓名，补入证据帮助“认人”
+                cited_ids = {item['page_id'] for item in evidence}
+                anchors = []
+                for page in pages:
+                    if len(anchors) >= 2:
+                        break
+                    if page['page_id'] in cited_ids or not page.get('text', '').strip():
+                        continue
+                    anchor = make_cite(page, 600)
+                    if page.get('image_path'):
+                        try:
+                            anchor['image_path'] = str(self.asset(book_id, page['image_path']))
+                        except (OSError, PipelineError):
+                            pass
+                    anchors.append(anchor)
+                evidence.extend(anchors)
+            if citations and self.adapters.get('answer') and self.adapters.get('capabilities', lambda: {'answer': True})().get('answer', False):
                 try:
-                    answer = self.adapters['answer'](question, citations, prior)
+                    answer = self.adapters['answer'](question, evidence, prior)
                 except Exception as exc:
                     raise PipelineError('问答服务失败，请检查配置或受控服务', 502) from exc
                 if not isinstance(answer, str) or not answer.strip():
                     raise PipelineError('问答服务未返回有效回答', 502)
                 cited_ids = set(re.findall(r'\[(p\d+)\]', answer))
-                allowed_ids = {cite['page_id'] for cite in citations}
+                allowed_ids = {cite['page_id'] for cite in citations} | {a['page_id'] for a in anchors}
                 if not cited_ids:
                     if re.search(r'不知道|无法确定|没有足够依据|not (?:know|enough evidence)', answer, re.I):
                         answer, source, citations = '原文没有足够依据，我暂时不知道。', 'model_abstained', []
@@ -711,8 +776,11 @@ class BookPipelineService:
                     raise PipelineError('模型回答引用了检索证据以外的页', 502)
                 else:
                     citations = [cite for cite in citations if cite['page_id'] in cited_ids]
+                    citations += [{k: v for k, v in a.items() if k != 'image_path'}
+                                  for a in anchors if a['page_id'] in cited_ids]
+                    citations.sort(key=lambda cite: cite['page_num'])
                     source = 'model_with_validated_citations'
-            else:
+            elif citations:
                 answer = '原文摘录（未调用问答模型）：\n' + '\n'.join(
                     f"第{c['page_num']}页：{c['excerpt'] or '（无文字）画面推断：' + '、'.join(c.get('visual', {}).get('terms', [])[:4])}"
                     for c in citations)

@@ -85,8 +85,12 @@ def test_export_cache_and_force_rebuild(tmp_path, monkeypatch):
 
 
 def test_missing_tools_and_missing_narration_fail_clearly(tmp_path):
+    # 没有 ffprobe 时 WAV 走标准库兜底解析，其他格式仍要明确报错
+    assert probe_media(wav(tmp_path / 'one.wav', .1), ffprobe=str(tmp_path / 'missing-tool'))['has_audio']
+    other = tmp_path / 'one.mp4'
+    other.write_bytes(b'not-media')
     with pytest.raises(MediaError, match='找不到 ffprobe'):
-        probe_media(wav(tmp_path / 'one.wav', .1), ffprobe=str(tmp_path / 'missing-tool'))
+        probe_media(other, ffprobe=str(tmp_path / 'missing-tool'))
     manifest = manifest_for_export(tmp_path / 'book')
     manifest['pages'][0]['media']['tts']['status'] = 'silent'
     with pytest.raises(MediaError, match='有文字页'):
